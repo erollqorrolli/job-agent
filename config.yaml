@@ -1,0 +1,16 @@
+# Safe defaults. Live submission is OFF until you flip it (dashboard or here).
+source_url: https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json
+term: "Summer 2027"
+poll_minutes: 120
+live_submit: false          # false = fill + validate + screenshot, never click final submit
+headless: false             # headed lets you watch and solve CAPTCHAs
+max_per_session: 50
+max_retries: 3
+delay_seconds: [20, 45]     # randomized pause between applications (polite pacing)
+priorities: [1, 2, 3]       # which priority tiers to process
+countries: [US]             # allowed countries; "Remote" always allowed
+excluded_keywords: []       # e.g. ["hardware", "mechanical"]
+browser_profile: browser_profile
+llm:                        # any OpenAI-compatible endpoint. Set LLM_API_KEY in env.
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai
+  model: gemini-2.0-flash

@@ -1,0 +1,10 @@
+<html><body><button type="submit" onclick="window.bad=true;return false">All Jobs</button>
+<form method="POST" action="/submit" onsubmit="return window.ok!==false">
+<div class="field"><label for="n">Legal First and Last Name *</label><input id="n" required></div>
+<div class="field"><label for="e">Email *</label><input id="e" required></div>
+<div class="field"><div class="q">Are you authorized to work in the US? *</div><div id="b1"><button type="submit" onclick="pick(this);return false">Yes</button><button type="submit" onclick="pick(this);return false">No</button></div></div>
+<div class="field"><div class="q">Do you now or in the future require sponsorship? *</div><div id="b2"><button type="submit" onclick="pick(this);return false">Yes</button><button type="submit" onclick="pick(this);return false">No</button></div></div>
+<div class="field"><label for="al">Autofill from resume</label><input id="al" type="file" onchange="document.getElementById('n').remove()"></div>
+<div class="field"><label for="rs">Resume *</label><input id="rs" type="file" required></div>
+<button type="submit">Submit Application</button></form>
+<script>function pick(b){[...b.parentElement.children].forEach(x=>x.dataset.sel='');b.dataset.sel='1'}</script></body></html>

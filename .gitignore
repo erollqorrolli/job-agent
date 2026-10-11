@@ -1,0 +1,6 @@
+data/
+browser_profile/
+profile.yaml
+.env
+__pycache__/
+*.pyc

@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skills</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Serif:wght@500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4efe3;--ink:#14213d;--mute:#6b6a63;--rule:#cfc8b6;--card:#faf6ea;--red:#a4161a;--ok:#2d5a3d}
+@media(prefers-color-scheme:dark){:root{--bg:#10151f;--ink:#ece6d6;--mute:#9a978b;--rule:#2d3548;--card:#161c29;--red:#e0555a;--ok:#7fc29a}}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif}main{max-width:1000px;margin:0 auto;padding:24px 16px 96px}
+h1{font:500 28px "IBM Plex Serif",serif;margin:0 0 6px}h2{font:600 12px "IBM Plex Sans";letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:26px 0 8px}
+p{color:var(--mute);max-width:70ch}.chips{display:flex;flex-wrap:wrap;gap:6px}
+.c{border:1px solid var(--rule);background:var(--card);padding:5px 10px;cursor:pointer;user-select:none;border-radius:1px}
+.c.course{border-color:var(--ink);background:transparent;color:var(--ink)}.c.used{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.bar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--rule);padding:10px 16px;display:flex;gap:12px;align-items:center}
+button{font:600 12px "IBM Plex Sans";letter-spacing:.05em;text-transform:uppercase;padding:9px 16px;border:1px solid var(--ink);background:var(--ink);color:var(--bg);border-radius:1px;cursor:pointer}
+button.l{background:transparent;color:var(--ink)}
+</style></head><body><main><h1>Skills</h1>
+<p>Click a skill once for <b>learned in a course</b> (outlined), twice for <b>used in a project or job</b> (filled), three times to clear. Only marked skills can ever appear on a tailored resume. Items already on your resume are pre-marked as used.</p>
+<div id="cats"></div></main>
+<div class="bar"><span id="n"></span><span style="flex:1"></span><button class="l" onclick="clr()">Clear all</button><button onclick="save()">Save</button></div>
+<script>
+let marks={};const order=[undefined,'course','used'];
+async function load(){const r=await (await fetch('/api/skills')).json();marks=r.marks;
+ cats.innerHTML=Object.entries(r.catalog).map(([c,l])=>`<h2>${c}</h2><div class="chips">${l.map(s=>`<span class="c ${marks[s]||''}" data-s="${s.replace(/"/g,'&quot;')}">${s}</span>`).join('')}</div>`).join('');
+ document.querySelectorAll('.c').forEach(e=>e.onclick=()=>{const s=e.dataset.s,i=(order.indexOf(marks[s])+1)%3,v=order[i];if(v)marks[s]=v;else delete marks[s];e.className='c '+(v||'');cnt()});cnt()}
+const cnt=()=>n.textContent=Object.keys(marks).length+' skills marked';
+function clr(){marks={};document.querySelectorAll('.c').forEach(e=>e.className='c');cnt()}
+async function save(){await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(marks)});alert('Saved')}
+load();
+</script></body></html>

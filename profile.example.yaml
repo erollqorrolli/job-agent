@@ -1,0 +1,49 @@
+# Copy to profile.yaml, fill in, then set verified: true.
+# Anything left null is NEVER guessed; the agent asks you in the dashboard instead.
+verified: false
+identity:
+  first_name: Jane
+  last_name: Doe
+  email: jane@example.edu
+  phone: null
+  pronouns: null
+  address: {line1: null, city: Springfield, state: IL, zip: null, country: United States}
+links: {linkedin: null, github: null, portfolio: null}
+education:
+  school: Example University
+  degree: Bachelor of Science in Engineering
+  degree_level: "Bachelor's"
+  major: Computer Science
+  start_date: null               # e.g. "2024-09"; asked on forms with start/end dates
+  graduation_date: "2028-05"   # month/year
+  gpa: null                     # leave null to decline GPA fields (they go to your queue if required)
+work_authorization:
+  authorized_us: null           # true/false; REQUIRED, legal answer, never guessed
+  requires_sponsorship: null
+  us_citizen: null
+  us_person: null    # true/false; REQUIRED
+preferences:
+  has_relative_at_company: null
+  government_employee: null
+  over_18: null
+  has_other_offers: null
+  willing_onsite: null
+  has_prior_experience: null
+  current_employer: null
+  available_full_duration: null
+  willing_to_relocate: null
+  salary_expectation: null
+  accept_standard_terms: null   # true = tick routine privacy/terms boxes automatically
+  how_did_you_hear: Other       # shown when a form asks
+  previously_worked_for_companies: []   # company names; anything else answers "No"
+demographics:                   # voluntary EEO. Default is to decline everything.
+  default: decline
+resumes:                        # first is default; tags pick by role category
+  - {path: null, tags: [default]}
+# Facts the answer writer is allowed to use. Real things only.
+facts:
+  projects: []        # - "short real description"
+  experience: []
+  skills: []
+  interests: []       # e.g. "backend systems", only if true
+  goals: []

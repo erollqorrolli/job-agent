@@ -1,0 +1,67 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Job Agent</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Serif:wght@500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4efe3;--ink:#14213d;--mute:#6b6a63;--rule:#cfc8b6;--red:#a4161a;--card:#faf6ea;--ok:#2d5a3d}
+@media(prefers-color-scheme:dark){:root{--bg:#10151f;--ink:#ece6d6;--mute:#9a978b;--rule:#2d3548;--red:#e0555a;--card:#161c29;--ok:#7fc29a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
+h1{font:500 28px "IBM Plex Serif",serif;margin:0 0 4px}h2{font:600 12px "IBM Plex Mono",monospace;letter-spacing:.08em;text-transform:uppercase;margin:32px 0 8px;color:var(--mute)}
+.sub{color:var(--mute);margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));border:1px solid var(--rule);background:var(--card)}
+.stat{padding:12px 14px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.stat b{display:block;font:500 26px "IBM Plex Mono",monospace}.stat span{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+button{font:600 12px "IBM Plex Sans";letter-spacing:.05em;text-transform:uppercase;padding:9px 14px;border:1px solid var(--ink);background:transparent;color:var(--ink);border-radius:1px;cursor:pointer}
+button:hover{background:var(--ink);color:var(--bg)}button.go{background:var(--ink);color:var(--bg)}button.warn{border-color:var(--red);color:var(--red)}button.warn:hover{background:var(--red);color:var(--bg)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule)}td,th{padding:7px 10px;border-bottom:1px solid var(--rule);text-align:left;vertical-align:top;font-size:13px}
+th{font:500 11px "IBM Plex Mono";text-transform:uppercase;color:var(--mute)}
+.st{font:500 11px "IBM Plex Mono"}.APPLIED{color:var(--ok)}.FAILED,.BLOCKED{color:var(--red)}.NEEDS_USER_INPUT,.UNCERTAIN{color:#8a5a00}
+.now{border-left:3px solid var(--red);padding:8px 12px;background:var(--card);font-family:"IBM Plex Mono";font-size:13px}
+.live{padding:10px 12px;border:1px solid var(--rule);background:var(--card)}
+input,select{font:inherit;padding:6px 8px;border:1px solid var(--rule);background:var(--card);color:var(--ink);border-radius:1px}
+.need{border:1px solid var(--rule);background:var(--card);padding:10px 12px;margin-bottom:8px}.need input{width:60%}
+.set{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}.set label{font-size:12px;color:var(--mute);display:block}
+</style></head><body><main>
+<h1>Job Agent</h1><div class="sub" id="sub">loading</div>
+<div class="now" id="now"></div>
+<div class="bar">
+<button class="go" onclick="act('start')">Start applying</button><button onclick="act('pause')">Pause</button><button onclick="act('resume')">Resume</button>
+<button class="warn" onclick="act('stop')">Stop</button><button onclick="act('retry')">Retry failed</button><button onclick="check()">Check new jobs</button><button onclick="exp()">Export results</button>
+</div>
+<div class="live" id="live"></div>
+<h2>Progress</h2><div class="grid" id="grid"></div>
+<h2>Questions needing input (grouped)</h2><div id="needs"></div>
+<h2>Latest applications</h2><table id="latest"></table>
+<h2>View applications</h2><select id="vs" onchange="view()"><option value="">choose status</option></select><table id="jobs" style="margin-top:8px"></table>
+<h2>Settings</h2><div class="set" id="set"></div><div style="margin-top:10px"><button onclick="save()">Save settings</button></div>
+<h2>Recent events</h2><table id="ev"></table>
+</main><script>
+const $=id=>document.getElementById(id), E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
+const act=n=>api('/api/action/'+n,{}).then(refresh);
+async function check(){const r=await api('/api/action/check',{});alert(JSON.stringify(r));refresh()}
+async function exp(){const r=await api('/api/action/export',{});alert('Saved: '+r.path)}
+async function live(on){const r=await api('/api/action/live',{on});if(r.error)alert(r.error+': '+(r.missing||[]).join(', '));refresh()}
+async function ans(k,i){const v=$('a'+i).value.trim();if(!v)return;await api('/api/answer',{qkey:k,answer:v});refresh()}
+async function view(){const s=$('vs').value;const r=await api('/api/jobs'+(s?'?status='+s:''));
+ $('jobs').innerHTML='<tr><th>Company<th>Role<th>Platform<th>P<th>Status<th>Note</tr>'+r.map(j=>`<tr><td>${E(j.company)}<td><a href="${E(j.url)}" target="_blank">${E(j.title)}</a><td>${E(j.platform)}<td>${j.priority}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}</tr>`).join('')}
+let loaded=false;
+async function save(){const g=k=>$('s_'+k);await api('/api/settings',{max_per_session:+g('max_per_session').value,priorities:g('priorities').value.split(',').map(Number),
+ countries:g('countries').value.split(',').map(s=>s.trim()),poll_minutes:+g('poll_minutes').value,max_retries:+g('max_retries').value,headless:g('headless').value==='true'});alert('saved')}
+async function refresh(){const s=await api('/api/state'),c=s.counts;
+ $('sub').textContent=`worker ${s.running?'running':'not running'} · control: ${s.control} · profile ${s.profile_ok?'verified':'NOT verified ('+s.profile_missing.join(', ')+')'}`;
+ $('now').textContent=s.current?'Processing: '+s.current:'Idle';
+ $('live').innerHTML=`Submission mode: <b>${s.settings.live_submit?'LIVE (submits applications)':'DRY RUN (fills and checks, never submits)'}</b> `+
+  (s.settings.live_submit?`<button class="warn" onclick="live(false)">Switch to dry run</button>`:`<button onclick="if(confirm('Enable live submissions? ${s.dryrun_ok} dry-run jobs will be queued.'))live(true)">Enable live submission</button>`)+` &nbsp; dry-run passed: ${s.dryrun_ok}`;
+ const cells=[['Total found',s.total],['Eligible',s.eligible],['Applied',c.APPLIED],['Already applied',c.ALREADY_APPLIED],['Failed',c.FAILED],['Needs input',c.NEEDS_USER_INPUT],['Blocked',c.BLOCKED],['Uncertain',c.UNCERTAIN],['Remaining',s.remaining],['Apps / hour',s.per_hour]];
+ $('grid').innerHTML=cells.map(([a,b])=>`<div class="stat"><b>${b}</b><span>${a}</span></div>`).join('');
+ $('latest').innerHTML='<tr><th>Time<th>Company<th>Role<th>Status<th>Note</tr>'+s.latest.map(j=>`<tr><td>${E(j.t)}<td>${E(j.company)}<td>${E(j.title)}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}</tr>`).join('');
+ const a=document.activeElement; if(!(a&&a.closest&&a.closest('#needs'))) $('needs').innerHTML=s.needs.length?s.needs.map((n,i)=>`<div class="need"><b>${E(n.question)}</b> <span class="st">(${n.n} job${n.n>1?'s':''}, ${E(n.kind)})</span><br>${n.kind=='draft'?'<small>Model draft. Edit or approve; it will not be reused for other companies.</small><br>':(n.options&&n.options!='[]'?'<small>'+E(JSON.parse(n.options).join(' | '))+'</small><br>':'')}<input id="a${i}" placeholder="your answer" value="${n.kind=='draft'?E(JSON.parse(n.options)[0]):''}" ${n.kind=='draft'?'style="width:90%"':''}> <button onclick='ans(${JSON.stringify(n.qkey)},${i})'>Save and resume</button></div>`).join(''):'<div class="sub">Nothing waiting.</div>';
+ if(!loaded){loaded=true;$('vs').innerHTML+=Object.keys(c).map(k=>`<option>${k}</option>`).join('');
+  const f=(k,l,v)=>`<div><label>${l}</label><input id="s_${k}" value="${E(v)}"></div>`;
+  $('set').innerHTML=f('max_per_session','Max applications per session',s.settings.max_per_session)+f('priorities','Priority tiers (1,2,3)',s.settings.priorities)+f('countries','Countries',s.settings.countries)+
+   f('poll_minutes','New-job check interval (min)',s.settings.poll_minutes)+f('max_retries','Retry limit',s.settings.max_retries)+`<div><label>Browser visible</label><select id="s_headless"><option value="false" ${s.settings.headless?'':'selected'}>Visible</option><option value="true" ${s.settings.headless?'selected':''}>Hidden</option></select></div>`;}
+ $('ev').innerHTML=s.events.map(e=>`<tr><td>${E(e.t)}<td>${E(e.msg)}</tr>`).join('')}
+refresh();setInterval(refresh,4000);
+</script></body></html>

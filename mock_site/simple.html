@@ -1,0 +1,20 @@
+<html><body><h1>Software Engineering Intern</h1>
+<form method="POST" action="/submit" enctype="multipart/form-data">
+<label for="fn">First Name *</label><input id="fn" name="fn" required>
+<label for="ln">Last Name *</label><input id="ln" name="ln" required>
+<label for="em">Email *</label><input id="em" name="em" type="email" required>
+<label for="ph">Phone *</label><input id="ph" name="ph" type="tel" required>
+<label for="li">LinkedIn Profile</label><input id="li" name="li">
+<label for="rs">Resume/CV *</label><input id="rs" name="rs" type="file" required>
+<label for="school">School *</label><input id="school" name="school" required>
+<label for="gd">Expected graduation date *</label><input id="gd" name="gd" required>
+<label for="auth">Are you legally authorized to work in the United States? *</label>
+<select id="auth" name="auth" required><option value="">Select</option><option>Yes</option><option>No</option></select>
+<fieldset><legend>Will you now or in the future require sponsorship? *</legend>
+<label><input type="radio" name="sp" value="y" required> Yes</label><label><input type="radio" name="sp" value="n"> No</label></fieldset>
+<label for="g">Gender</label><select id="g" name="g"><option value="">Select</option><option>Male</option><option>Female</option><option>Decline to self-identify</option></select>
+<div class="application-question"><div class="application-label">Are you Hispanic or Latinx?</div><input name="cards[x][field0]" id="hx" role="combobox" aria-haspopup="listbox" onfocus="o()" oninput="o()">
+<ul id="lst" role="listbox" hidden style="margin:0;padding:0;list-style:none"><li role="option" onclick="pick(this)">Yes</li><li role="option" onclick="pick(this)">No</li><li role="option" onclick="pick(this)">Decline To Self Identify</li></ul></div>
+<script>function o(){document.getElementById('lst').hidden=false}function pick(e){document.getElementById('hx').value=e.innerText;document.getElementById('lst').hidden=true}</script>
+<label for="why">Why do you want to work here? *</label><textarea id="why" name="why" required></textarea>
+<button type="submit">Submit Application</button></form></body></html>
