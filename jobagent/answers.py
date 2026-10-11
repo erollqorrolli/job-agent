@@ -5,7 +5,9 @@ from .profile import load_profile
 BANNED = [r"passionate", r"thrilled", r"eager to", r"leverage", r"honored", r"fascinated", r"aligns? (perfectly )?with",
           r"thrive", r"unique blend", r"innovative", r"intersection of", r"dreamed", r"commitment to excellence",
           r"excited to contribute", r"cutting[- ]edge", r"dynamic", r"synerg", r"delve", r"tapestry", r"spearhead", r"—", r"–",
-          r"deeply", r"incredibly", r"i am writing to"]
+          r"deeply", r"incredibly", r"i am writing to",
+          r"excit", r"fascinat", r"boundaries", r"opportunity to", r"i('| ha)ve (been )?(follow|admir|long)", r"been following", r"big fan", r"admire",
+          r"love (to|the)", r"eager", r"journey", r"landscape", r"cutting", r"world-class", r"mission", r"impactful", r"game[- ]chang"]
 BANNED_RE = re.compile("|".join(BANNED), re.I)
 
 STYLE = """You write job application answers as a normal college student.
@@ -14,6 +16,7 @@ Never use em dashes. Do not force the company name in. Do not open with 'I am'.
 Use ONLY the facts provided. Do not invent projects, metrics, employers, tools or stories.
 If the facts are not enough to answer honestly, reply with exactly: INSUFFICIENT_FACTS
 Length: short question 1-3 sentences, medium 3-5, essay as needed but no filler. Respect any limit given.
+Never claim you followed, admired, or researched the company beyond what the posting says. Do not say you are excited, fascinated, or thrilled.
 Example of the right tone: "I like building stuff and figuring out how things work. I've worked on a few projects where I got to solve real problems with code, and I want to keep getting better at that while working with a team."
 """
 
@@ -42,7 +45,7 @@ def _chat(cfg, system, user) -> str:
     base = os.environ.get("LLM_BASE_URL", llm.get("base_url", "")).rstrip("/")
     r = requests.post(f"{base}/chat/completions", timeout=90,
                       headers={"Authorization": f"Bearer {os.environ.get('LLM_API_KEY', 'none')}"},
-                      json={"model": os.environ.get("LLM_MODEL", llm.get("model")), "temperature": 0.7,
+                      json={"model": os.environ.get("LLM_MODEL", llm.get("model")), "temperature": 0.4,
                             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip()
@@ -72,9 +75,10 @@ def write_answer(cfg, question, company, role, job_text, limit=None, chat=None) 
     user = (f"Company: {company}\nRole: {role}\nAbout the role (from the posting, may be partial):\n{job_text[:2500]}\n\n"
             f"My real background (only use this):\n{facts_block(profile)}\n\nQuestion: {question}\n"
             + (f"Hard limit: {limit} characters.\n" if limit else "") + "Write my answer.")
-    for attempt in range(2):
+    bad = []
+    for attempt in range(3):
         try:
-            out = chat(STYLE, user if attempt == 0 else user + f"\nRewrite. Do not use: {', '.join(bad)}")
+            out = chat(STYLE, user if attempt == 0 else user + f"\nYour last try was rejected for: {', '.join(bad)}. Rewrite it plainer, in 2 or 3 short sentences, using only the facts.")
         except Exception:
             return None
         if out.strip() == "INSUFFICIENT_FACTS":

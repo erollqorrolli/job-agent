@@ -89,7 +89,7 @@ class DB:
         for r in rows:  # re-queue jobs that were waiting only on this
             left = self.q("SELECT 1 FROM human_queue WHERE job_id=? AND resolved_at IS NULL", (r["job_id"],))
             if not left:
-                self.x("UPDATE jobs SET status='NOT_STARTED', retries=0, next_try_at=0 WHERE id=? AND status='NEEDS_USER_INPUT'", (r["job_id"],))
+                self.x("UPDATE jobs SET status='NOT_STARTED', status_reason='answered, queued to retry', retries=0, next_try_at=0 WHERE id=? AND status='NEEDS_USER_INPUT'", (r["job_id"],))
 
     def counts(self):
         c = {s: 0 for s in STATUSES}

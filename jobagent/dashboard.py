@@ -17,6 +17,12 @@ def proc_alive():
     if not pid:
         return False
     try:
+        done, _ = os.waitpid(pid, os.WNOHANG)      # reap if it is our finished child (a zombie still answers kill(pid, 0))
+        if done:
+            return False
+    except ChildProcessError:
+        pass
+    try:
         os.kill(pid, 0); return True
     except OSError:
         return False
