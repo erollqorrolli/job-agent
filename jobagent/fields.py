@@ -355,9 +355,11 @@ def decide(f: dict, ctx) -> Decision:
     # factual question the profile may settle: let the local model pick, but only with grounded evidence
     if label and getattr(ctx, "choice_fn", None) and (opts or (kind == "text" and len(label) <= 120)):
         got = ctx.choice_fn(label, opts)
-        if got is not None:
-            ctx.db.save_answer(key, label, got if not opts else opts[got], "llm")
+        if got is not None and opts:
+            ctx.db.save_answer(key, label, opts[got], "llm")
             return Decision(value=got, source="llm-grounded")
+        if got is not None:      # free text from a small model: show it to the user as a draft instead of using it
+            return Decision(need=(label, "draft", got))
     # open question
     if kind in ("textarea", "text") and label:
         if (kind == "textarea" or len(label) > 40) and f.get("required"):

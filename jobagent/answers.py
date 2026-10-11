@@ -107,6 +107,8 @@ def _norm(t):
 def pick_grounded(cfg, question, options, profile, chat=None):
     """Return option index (or short text) only if the model quotes evidence that really is in the facts sheet. Else None."""
     import json
+    if re.search(r"how many|number of|how long|how much|\\byears?\\b|\\bcount\\b", question, re.I):
+        return None          # counts and durations are exactly where small models invent numbers
     sheet = facts_sheet(profile)
     system = ("Answer an application question using ONLY the facts. If the facts do not clearly settle it, answer null. "
               'Reply with JSON only: {"answer": <exact option text or short answer or null>, "evidence": "<exact phrase copied from the facts>"}')

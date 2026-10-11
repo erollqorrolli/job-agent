@@ -98,3 +98,17 @@ def test_facts_sheet_has_no_contact_details(profile):
     from jobagent.answers import facts_sheet
     sheet = facts_sheet(profile)
     assert "2155550100" not in sheet and "test@example.com" not in sheet and "resume.pdf" not in sheet
+
+
+def test_counts_and_free_text_never_auto_used(db, profile):
+    import json
+    from jobagent.answers import pick_grounded
+    profile["facts"]["experience"] = ["Penn Engineering TPM intern"]
+    ok = lambda s, u: json.dumps({"answer": "2", "evidence": "experience: Penn Engineering TPM intern"})
+    assert pick_grounded({}, "How many prior internships have you had?", ["0", "1", "2"], profile, chat=ok) is None
+    c = ctx(db, profile)
+    txt = lambda s, u: json.dumps({"answer": "Python", "evidence": "skills: Python"})
+    profile["facts"]["skills"] = ["Python"]
+    c.choice_fn = lambda q, o: pick_grounded({}, q, o, profile, chat=txt)
+    r = fields.decide({"kind": "text", "label": "Favorite language?", "required": True, "id": "x"}, c)
+    assert r.need and r.need[1] == "draft"
