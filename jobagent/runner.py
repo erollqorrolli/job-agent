@@ -7,7 +7,7 @@ from .answers import write_answer, llm_configured
 from .config import SHOTS
 from .profile import load_profile, get, verified, norm_key
 from .config import DATA
-from .tailor import tailor
+from .tailor import tailor_fit
 
 MAX_STEPS = 10
 
@@ -48,13 +48,17 @@ def maybe_tailor(db, cfg, profile, job, job_text, default_path):
     ident = profile.get("identity", {})
     out = DATA / "resumes" / job["id"][:8] / f"{ident.get('first_name','')}_{ident.get('last_name','')}_Resume.docx"
     try:
-        info = tailor(docx, job_text, bank, out)
+        out, info = tailor_fit(docx, job_text, bank, out)
     except Exception as e:
         db.log(job["id"], f"tailor failed, using default resume: {e}")
         return default_path, None
     key = f"resume@{job['id']}"
     approved = db.q("SELECT COUNT(*) n FROM answers WHERE qkey LIKE 'resume@%'")[0]["n"]
-    if approved < cfg.get("tailor_review_first", 5) and db.get_answer(key) is None:
+    limit = cfg.get("tailor_review_first", 5)
+    if approved < limit and db.get_answer(key) is None:
+        pending = db.q("SELECT COUNT(*) n FROM human_queue WHERE kind='resume' AND resolved_at IS NULL AND job_id!=?", (job["id"],))[0]["n"]
+        if approved + pending >= limit:     # enough reviews already waiting; hold this job instead of flooding the queue
+            return str(out), Outcome("NOT_STARTED", "DEFER_REVIEW")
         summary = f"added: {', '.join(info['added_used'] + info['added_course']) or 'nothing'}; projects reordered: {info['reordered']}"
         db.add_need(job["id"], key, f"Review tailored resume for {job['company']} - {job['title']}", "resume", [str(out), summary])
         return str(out), Outcome("NEEDS_USER_INPUT", "tailored resume awaiting your review")

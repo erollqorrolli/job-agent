@@ -22,7 +22,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("ingest"); sub.add_parser("stats"); sub.add_parser("export"); sub.add_parser("login")
     sub.add_parser("profile-check"); sub.add_parser("retry-failed"); sub.add_parser("enable-live"); sub.add_parser("answer")
-    d = sub.add_parser("dry-run"); d.add_argument("n", type=int, nargs="?", default=5); d.add_argument("--platform")
+    d = sub.add_parser("dry-run"); d.add_argument("n", type=int, nargs="?", default=5); d.add_argument("--platform"); d.add_argument("--no-review", action="store_true")
     w = sub.add_parser("worker"); w.add_argument("--limit", type=int)
     ds = sub.add_parser("dashboard"); ds.add_argument("--port", type=int, default=5055)
     a = ap.parse_args(argv)
@@ -60,7 +60,7 @@ def main(argv=None):
             if v:
                 db.resolve_need(n["qkey"], v)
     elif a.cmd == "dry-run":  # never submits, regardless of saved settings
-        worker.run(db, once_limit=a.n, override={"live_submit": False, "headless": True}, platform=a.platform)
+        worker.run(db, once_limit=a.n, override={"live_submit": False, "headless": True, **({"tailor_review_first": 0} if a.no_review else {})}, platform=a.platform)
     elif a.cmd == "worker":
         worker.run(db, once_limit=a.limit)
     elif a.cmd == "dashboard":

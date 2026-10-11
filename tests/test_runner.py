@@ -131,4 +131,16 @@ def test_tailored_resume_is_uploaded_and_first_ones_need_review(page, db, site, 
     db.resolve_need(need["qkey"], "ok")
     out = process(page, db, cfg, db.q("SELECT * FROM jobs")[0], answer_chat=GOOD)
     assert out.reason == "DRYRUN_OK", out
-    assert page.evaluate("document.querySelector('#rs').files[0].name") == "Test_Student_Resume.docx"
+    assert page.evaluate("document.querySelector('#rs').files[0].name") .startswith("Test_Student_Resume.")
+
+
+def test_review_queue_is_capped(page, db, site, profile, tmp_path):
+    from tests.test_tailor import make
+    src = tmp_path / "base.docx"; make(src)
+    profile["resumes"][0]["docx"] = str(src)
+    db.kv_set("skills", {"Redis": "used"})
+    cfg = {"live_submit": False, "tailor_min_chars": 10, "tailor_review_first": 2}
+    outs = [process(page, db, cfg, make_job(db, f"{site}/simple.html", jid=f"j{i}"), answer_chat=GOOD) for i in range(4)]
+    assert [o.reason for o in outs[:2]] == ["tailored resume awaiting your review"] * 2
+    assert [o.reason for o in outs[2:]] == ["DEFER_REVIEW"] * 2
+    assert db.q("SELECT COUNT(*) n FROM human_queue WHERE kind='resume'")[0]["n"] == 2

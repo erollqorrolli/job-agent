@@ -124,6 +124,9 @@ def apply_outcome(db, cfg, job, out: Outcome):
              questions_json=__import__("json").dumps(out.questions))
     if out.status == "APPLIED":
         f["submitted_at"] = time.time()
+    if out.status == "NOT_STARTED" and out.reason == "DEFER_REVIEW":
+        f["next_try_at"] = time.time() + 900     # try again after the user has had a chance to review
+        f["status_reason"] = "waiting for resume reviews"
     if out.status == "NOT_STARTED" and out.reason == "DRYRUN_OK":
         f["next_try_at"] = time.time() + 86400 * 3650  # parked until live mode is enabled
         f["last_error"] = "DRYRUN_OK"

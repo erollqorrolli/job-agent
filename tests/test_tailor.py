@@ -22,18 +22,20 @@ def make(path):
     d.save(str(path))
 
 
-def test_adds_only_confirmed_mentioned_skills(tmp_path):
+def test_adds_only_confirmed_mentioned_skills_to_existing_lines(tmp_path):
     src = tmp_path / "r.docx"; make(src)
+    before = [p.text for p in Document(str(src)).paragraphs]
     info = tailor(src, "We use Go, Kubernetes, Terraform, Redis and Docker. Experience with distributed systems. Cobol a plus.", BANK, tmp_path / "o.docx")
-    txt = "\n".join(p.text for p in Document(str(tmp_path / "o.docx")).paragraphs)
-    assert "Redis" in txt                                    # used + mentioned -> tools line
-    assert "Coursework & Familiarity: " in txt and "Kubernetes" in txt and "Distributed Systems" in txt
-    skills = "\n".join(l for l in txt.splitlines() if l.startswith(("Programming", "Frameworks", "Coursework")))
-    assert "Solidity" not in skills and "Rust" not in skills and "Cobol" not in skills   # not mentioned / not in bank
-    tools = [p.text for p in Document(str(tmp_path / "o.docx")).paragraphs if p.text.startswith("Frameworks")][0]
-    assert tools.index("Redis") < tools.index("Interests")  # inserted before the Interests label
-    assert "Kubernetes" not in tools                        # course-level never on the tools line
-    assert "Go" in info["added_course"]                     # golang/"Go," context accepted as listed
+    after = [p.text for p in Document(str(tmp_path / "o.docx")).paragraphs]
+    assert len(after) == len(before)                          # no new paragraphs / sections
+    tools = [t for t in after if t.startswith("Frameworks")][0]
+    langs = [t for t in after if t.startswith("Programming")][0]
+    assert "Redis" in tools and "Kubernetes" in tools and "Terraform" in tools
+    assert tools.index("Kubernetes") < tools.index("Interests")  # tools stay before the Interests label
+    assert "Go" in langs
+    assert "Distributed Systems" in tools.split("Interests")[1]    # concepts go on the Interests line
+    skills = "\n".join(t for t in after if t.startswith(("Programming", "Frameworks")))
+    assert "Solidity" not in skills and "Rust" not in skills and "Cobol" not in skills
 
 
 def test_ambiguous_words_do_not_match():
