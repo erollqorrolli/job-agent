@@ -6,6 +6,8 @@ from .adapters import adapter_for
 from .answers import write_answer, llm_configured
 from .config import SHOTS
 from .profile import load_profile, get, verified, norm_key
+from .config import DATA
+from .tailor import tailor
 
 MAX_STEPS = 10
 
@@ -35,6 +37,28 @@ def pick_resume(profile, category):
         if r.get("path"):
             return r["path"]
     return None
+
+
+def maybe_tailor(db, cfg, profile, job, job_text, default_path):
+    """Returns (path_to_upload, Outcome|None). Outcome is set when the user must review a tailored resume first."""
+    docx = next((r.get("docx") for r in profile.get("resumes") or [] if r.get("docx")), None)
+    bank = db.kv_get("skills") or {}
+    if not cfg.get("tailor_resume", True) or not docx or not bank or len(job_text) < cfg.get("tailor_min_chars", 200):
+        return default_path, None
+    ident = profile.get("identity", {})
+    out = DATA / "resumes" / job["id"][:8] / f"{ident.get('first_name','')}_{ident.get('last_name','')}_Resume.docx"
+    try:
+        info = tailor(docx, job_text, bank, out)
+    except Exception as e:
+        db.log(job["id"], f"tailor failed, using default resume: {e}")
+        return default_path, None
+    key = f"resume@{job['id']}"
+    approved = db.q("SELECT COUNT(*) n FROM answers WHERE qkey LIKE 'resume@%'")[0]["n"]
+    if approved < cfg.get("tailor_review_first", 5) and db.get_answer(key) is None:
+        summary = f"added: {', '.join(info['added_used'] + info['added_course']) or 'nothing'}; projects reordered: {info['reordered']}"
+        db.add_need(job["id"], key, f"Review tailored resume for {job['company']} - {job['title']}", "resume", [str(out), summary])
+        return str(out), Outcome("NEEDS_USER_INPUT", "tailored resume awaiting your review")
+    return str(out), None
 
 
 def shot(page, job, tag):
@@ -119,6 +143,10 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
         return Outcome("NEEDS_USER_INPUT", "account/sign-in required", evidence=shot(page, job, "login"))
     page_text = detect.body_text(page)
     resume_path = pick_resume(profile, job.get("category"))
+    resume_path, review = maybe_tailor(db, cfg, profile, job, page_text, resume_path)
+    if review:
+        review.evidence = shot(page, job, "review")
+        return review
     ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat) \
         if (answer_chat or llm_configured()) else None
     ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"])

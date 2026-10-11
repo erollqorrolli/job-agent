@@ -118,3 +118,13 @@ def skills_set():
 @app.get("/skills")
 def skills_page():
     return Response(open(ROOT / "jobagent" / "skills.html").read(), mimetype="text/html")
+
+
+@app.get("/resume-file")
+def resume_file():
+    from flask import send_file, abort
+    from pathlib import Path
+    pth = Path(request.args.get("p", "")).resolve()
+    if not str(pth).startswith(str((ROOT / "data" / "resumes").resolve())) or not pth.exists():
+        abort(404)
+    return send_file(pth, as_attachment=True)

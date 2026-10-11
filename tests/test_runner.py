@@ -115,3 +115,20 @@ def test_ashby_style_buttons_autofill_widget_and_submit_selector(page, db, site,
     assert page.evaluate("document.querySelector('#b1 [data-sel=\"1\"]').innerText") == "Yes"
     assert page.evaluate("document.querySelector('#b2 [data-sel=\"1\"]').innerText") == "Yes"   # needs sponsorship
     assert page.input_value("#n") == "Test Student"                 # full-name rule; autofill widget left alone
+
+
+def test_tailored_resume_is_uploaded_and_first_ones_need_review(page, db, site, profile, tmp_path):
+    from docx import Document
+    from tests.test_tailor import make
+    src = tmp_path / "base.docx"; make(src)
+    profile["resumes"][0]["docx"] = str(src)
+    db.kv_set("skills", {"Redis": "used", "Python": "used"})
+    job = make_job(db, f"{site}/simple.html")
+    cfg = {"live_submit": False, "tailor_min_chars": 10, "tailor_review_first": 1}
+    out = process(page, db, cfg, job, answer_chat=GOOD)
+    assert out.status == "NEEDS_USER_INPUT" and "tailored resume" in out.reason       # first one waits for the user
+    need = db.q("SELECT * FROM human_queue WHERE kind='resume'")[0]
+    db.resolve_need(need["qkey"], "ok")
+    out = process(page, db, cfg, db.q("SELECT * FROM jobs")[0], answer_chat=GOOD)
+    assert out.reason == "DRYRUN_OK", out
+    assert page.evaluate("document.querySelector('#rs').files[0].name") == "Test_Student_Resume.docx"
