@@ -60,3 +60,41 @@ def test_pronouns_and_us_person(db, profile):
     r = d(db, profile, "Are you a U.S. citizen?", "select", ("Yes", "No"), required=False)
     assert r.value == 1 and not r.ineligible
     assert d(db, profile, "Are you legally authorized to work in the United States?").value == 0
+
+
+def test_saved_no_does_not_bypass_us_person_ineligibility(db, profile):
+    profile["work_authorization"].update(us_person=False, us_citizen=False)
+    q = "As a result of the work performed by Acme, all eligible candidates must be a U.S. Person. Are you?"
+    db.save_answer(fields.norm_key(q), q, "No")
+    assert d(db, profile, q, "radio").ineligible
+
+
+def test_enrolled_is_always_yes(db, profile):
+    profile["education"]["currently_enrolled"] = True
+    r = d(db, profile, "Are you enrolled in a Bachelor's, Master's or PhD program from an accredited college or university?", opts=("Yes", "No"))
+    assert r.value == 0
+
+
+def test_grounded_model_answers_need_real_evidence(db, profile):
+    import json
+    profile["facts"]["skills"] = ["Python", "Docker"]
+    c = ctx(db, profile)
+    from jobagent.answers import pick_grounded
+    good = lambda s, u: json.dumps({"answer": "Yes", "evidence": "skills: Python"})
+    made_up = lambda s, u: json.dumps({"answer": "Yes", "evidence": "worked at Google for three years"})
+    unsure = lambda s, u: json.dumps({"answer": None, "evidence": ""})
+    bad_opt = lambda s, u: json.dumps({"answer": "Maybe", "evidence": "skills: Python"})
+    q = "Do you have experience with Python?"
+    assert pick_grounded({}, q, ["Yes", "No"], profile, chat=good) == 0
+    assert pick_grounded({}, q, ["Yes", "No"], profile, chat=made_up) is None     # evidence not in the facts
+    assert pick_grounded({}, q, ["Yes", "No"], profile, chat=unsure) is None
+    assert pick_grounded({}, q, ["Yes", "No"], profile, chat=bad_opt) is None     # answer not one of the options
+    c.choice_fn = lambda qq, opts: pick_grounded({}, qq, opts, profile, chat=good)
+    r = fields.decide({"kind": "select", "label": q, "options": ["Yes", "No"], "required": True, "id": "x"}, c)
+    assert r.value == 0 and db.get_answer(fields.norm_key(q)) == "Yes"             # saved so the model isn't asked twice
+
+
+def test_facts_sheet_has_no_contact_details(profile):
+    from jobagent.answers import facts_sheet
+    sheet = facts_sheet(profile)
+    assert "2155550100" not in sheet and "test@example.com" not in sheet and "resume.pdf" not in sheet

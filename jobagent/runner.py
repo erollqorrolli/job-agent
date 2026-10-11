@@ -3,7 +3,7 @@ import json, re, time
 from dataclasses import dataclass, field
 from . import detect, fields
 from .adapters import adapter_for
-from .answers import write_answer, llm_configured
+from .answers import write_answer, llm_configured, pick_grounded, CFG_FOR_CHOICE
 from .config import SHOTS
 from .profile import load_profile, get, verified, norm_key
 from .config import DATA
@@ -120,8 +120,8 @@ def reach_form(page, adapter):
         return page.evaluate("() => [...document.querySelectorAll('input:not([type=hidden]):not([type=search]),textarea,select')].filter(e=>e.getBoundingClientRect().width>0).length")
     if nfields() >= 3:
         return
-    btn = click_first(page, ['a:visible:text-matches("^\\\\s*apply( now| for this job| for this role)?\\\\s*$", "i")',
-                             'button:visible:text-matches("^\\\\s*(apply( now| for this job| for this role)?|start application)\\\\s*$", "i")'])
+    from .adapters import find_button
+    btn = find_button(page, [], re.compile(r"^\s*(apply( now| for this job| for this role)?|start application)\s*$", re.I))
     if not btn:
         return
     href = btn.get_attribute("href") if btn.evaluate("e => e.tagName") == "A" else None
@@ -154,6 +154,9 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
     ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat) \
         if (answer_chat or llm_configured()) else None
     ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"])
+    CFG_FOR_CHOICE[0] = cfg
+    if answer_chat or llm_configured():
+        ctx.choice_fn = lambda q, opts: pick_grounded(cfg, q, opts, profile, chat=answer_chat)
     asked = []
 
     for step in range(MAX_STEPS):
@@ -192,8 +195,8 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                     db.add_need(job["id"], norm_key(q), q, kind, f.get("options"))
             return Outcome("NEEDS_USER_INPUT", f"{len(needs)} unanswered", evidence=shot(page, job, "needs"), questions=asked)
 
-        sub = click_first(page, adapter.submit_selectors())
-        nxt = click_first(page, adapter.next_selectors()) if not sub else None
+        sub = adapter.find_submit(page)
+        nxt = adapter.find_next(page) if not sub else None
         if sub and not nxt:
             problems = pre_submit_check(page, profile, flds)
             if problems:

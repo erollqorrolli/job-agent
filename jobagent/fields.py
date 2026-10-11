@@ -121,6 +121,7 @@ BOOL_RULES = [
 ]
 # yes/no facts the user has confirmed; checked BEFORE the legal-declaration guard
 PREF_BOOL = [
+    (r"enrolled in|currently (a |an )?(student|enrolled)|pursuing (a |an )?(bachelor|master|phd|degree)|accredited (college|university)", "education.currently_enrolled"),
     (r"relative|family member|related to (any|an)|spouse", "preferences.has_relative_at_company"),
     (r"government (employee|official)|public official|elected official", "preferences.government_employee"),
     (r"at least 18|18 years|over 18|legal age", "preferences.over_18"),
@@ -225,6 +226,18 @@ def decide(f: dict, ctx) -> Decision:
             return Decision(value=ctx.resume_path, source="resume") if ctx.resume_path else Decision(need=("Resume file path missing in profile", "file"))
         return Decision(skip=not f.get("required"), need=("Document required: " + label, "file") if f.get("required") else None)
     saved = (ctx.db.get_answer(f"{key}@{ctx.job_id}") or ctx.db.get_answer(key)) if key else None
+    if re.search(r"u\.?s\.? ?(person|citizen)|citizenship|itar|export control", label, re.I):
+        person = get(p, "work_authorization.us_person")
+        citizen = get(p, "work_authorization.us_citizen")
+        v = person if re.search(r"person|itar|export", label, re.I) else citizen
+        if v is None:
+            return Decision(need=(label, kind))
+        if v is False and re.search(r"must be|required|only|eligible (candidates|applicants)|restricted to", label, re.I):
+            return Decision(ineligible="requires US person/citizen")
+        i = pick_option(opts, bool(v)) if opts else None
+        if opts and i is None:
+            return Decision(need=(label, kind))
+        return Decision(value=i if opts else ("Yes" if v else "No"), source="profile")
     if saved is not None and kind != "checkbox":
         if kind in ("select", "radio", "combobox", "btngroup"):
             i = pick_option(opts, saved)
@@ -249,18 +262,6 @@ def decide(f: dict, ctx) -> Decision:
                 i = pick_option(opts, str(g))
             return Decision(value=i, source="profile") if i is not None else Decision(need=(label, kind))
         return Decision(value=str(g), source="profile")
-    if re.search(r"u\.?s\.? ?(person|citizen)|citizenship|itar|export control", label, re.I):
-        person = get(p, "work_authorization.us_person")
-        citizen = get(p, "work_authorization.us_citizen")
-        v = person if re.search(r"person|itar|export", label, re.I) else citizen
-        if v is None:
-            return Decision(need=(label, kind))
-        if v is False and re.search(r"must be|required|only|eligible (candidates|applicants)|restricted to", label, re.I):
-            return Decision(ineligible="requires US person/citizen")
-        i = pick_option(opts, bool(v)) if opts else None
-        if opts and i is None:
-            return Decision(need=(label, kind))
-        return Decision(value=i if opts else ("Yes" if v else "No"), source="profile")
     if EEO.search(label) and not re.search(r"auth|sponsor", label, re.I):
         pref = get(p, "demographics.default") or "decline"
         if kind in ("select", "radio", "combobox", "btngroup") and pref == "decline":
@@ -351,6 +352,12 @@ def decide(f: dict, ctx) -> Decision:
                     return Decision(need=(label, kind)) if f.get("required") else Decision(skip=True)
                 return Decision(value=i, source="profile")
             return Decision(value=str(v), source="profile")
+    # factual question the profile may settle: let the local model pick, but only with grounded evidence
+    if label and getattr(ctx, "choice_fn", None) and (opts or (kind == "text" and len(label) <= 120)):
+        got = ctx.choice_fn(label, opts)
+        if got is not None:
+            ctx.db.save_answer(key, label, got if not opts else opts[got], "llm")
+            return Decision(value=got, source="llm-grounded")
     # open question
     if kind in ("textarea", "text") and label:
         if (kind == "textarea" or len(label) > 40) and f.get("required"):
@@ -418,6 +425,8 @@ def apply(page, f: dict, d: Decision):
         val = str(d.value)
         if f.get("maxlength"):
             val = val[: f["maxlength"]]
+        if re.search(r"location|city", f.get("label", ""), re.I) and f["kind"] == "text":
+            return fill_autocomplete(page, loc, val)
         try:
             loc.fill(val, timeout=4000)
         except Exception:   # overlays / phone widgets: type it instead
@@ -438,3 +447,23 @@ def read_combo_options(page, f) -> list[str]:
         return texts
     except Exception:
         return []
+
+
+SUGGEST = '.dropdown-location, .dropdown-results li, [role=option], .pac-item, li[class*=suggest], [class*=autocomplete] li'
+
+
+def fill_autocomplete(page, loc, val):
+    """Location boxes (Lever etc.) discard free text unless a suggestion is clicked."""
+    city = re.split(r"[,(]", val)[0].strip() or val
+    loc.click(timeout=4000); loc.fill("", timeout=3000); loc.press_sequentially(city, delay=70)
+    page.wait_for_timeout(2200)
+    opts = page.locator(SUGGEST + ":visible")
+    texts = [t.strip() for t in opts.all_inner_texts()]
+    if not texts:
+        loc.fill(val)           # plain text field after all
+        return True
+    want = city.lower()
+    best = next((i for i, t in enumerate(texts) if want in t.lower() and re.search(r"\\bUSA?\\b|United States|,\\s*[A-Z]{2}\\b", t)), 0)
+    opts.nth(best).click()
+    page.wait_for_timeout(400)
+    return True

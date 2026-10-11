@@ -13,12 +13,35 @@ class Adapter:
     def prepare(self, page):
         """Platform-specific navigation after first load (e.g. leave an embed iframe)."""
 
-    def submit_selectors(self):
-        return ['button[type=submit]:visible', 'input[type=submit]:visible',
-                'button:visible:text-matches("^\\\\s*(submit( application)?|send application|apply)\\\\s*$", "i")']
+    submit_css = []     # exact ids/data-qa hooks for a platform
+    submit_re = re.compile(r"^\s*(submit( application)?|send application|finish|complete application|apply( now)?)\s*$", re.I)
+    next_re = re.compile(r"^\s*(next|continue|save (and|&) continue|next step|proceed)\s*$", re.I)
 
-    def next_selectors(self):
-        return ['button:visible:text-matches("^\\\\s*(next|continue|save (and|&) continue|next step|proceed)\\\\s*$", "i")']
+    def find_submit(self, page):
+        return find_button(page, self.submit_css, self.submit_re)
+
+    def find_next(self, page):
+        return find_button(page, [], self.next_re)
+
+
+def find_button(page, css, name_re):
+    """Role-based lookup (text may sit in a child <span>). Never falls back to a bare type=submit match,
+    which also matches 'Yes', 'Upload file', 'All Jobs' ..."""
+    for sel in css:
+        loc = page.locator(sel).first
+        if loc.count() and loc.is_visible():
+            return loc
+    for role in ("button", "link"):
+        loc = page.get_by_role(role, name=name_re)
+        for i in range(min(loc.count(), 6)):
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+    loc = page.locator("input[type=submit]")
+    for i in range(min(loc.count(), 4)):
+        v = loc.nth(i).get_attribute("value") or ""
+        if name_re.match(v) and loc.nth(i).is_visible():
+            return loc.nth(i)
+    return None
 
 
 class Greenhouse(Adapter):
@@ -29,8 +52,7 @@ class Greenhouse(Adapter):
         if fr and fr.get_attribute("src"):
             page.goto(fr.get_attribute("src"), wait_until="domcontentloaded")
 
-    def submit_selectors(self):
-        return ['#submit_app', 'button:visible:text-matches("^\\\\s*submit application\\\\s*$", "i")'] + super().submit_selectors()
+    submit_css = ["#submit_app"]
 
 
 class Lever(Adapter):
@@ -40,8 +62,7 @@ class Lever(Adapter):
         u = urlsplit(url)
         return url if u.path.rstrip("/").endswith("/apply") else urlunsplit((u.scheme, u.netloc, u.path.rstrip("/") + "/apply", "", ""))
 
-    def submit_selectors(self):
-        return ['#btn-submit', 'button[data-qa="btn-submit"]'] + super().submit_selectors()
+    submit_css = ["#btn-submit", 'button[data-qa="btn-submit"]']
 
 
 class Ashby(Adapter):
@@ -62,11 +83,8 @@ class AccountRequired(Adapter):
 class Workday(AccountRequired):
     name = "workday"
 
-    def next_selectors(self):
-        return ['button[data-automation-id="bottom-navigation-next-button"]', 'button[data-automation-id="pageFooterNextButton"]'] + super().next_selectors()
-
-    def submit_selectors(self):
-        return ['button[data-automation-id="bottom-navigation-next-button"]:text-matches("submit", "i")'] + super().submit_selectors()
+    def find_next(self, page):
+        return find_button(page, ['button[data-automation-id="bottom-navigation-next-button"]', 'button[data-automation-id="pageFooterNextButton"]'], self.next_re)
 
 
 def _acct(n):

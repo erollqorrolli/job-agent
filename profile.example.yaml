@@ -12,6 +12,7 @@ links: {linkedin: null, github: null, portfolio: null}
 education:
   school: Example University
   degree: Bachelor of Science in Engineering
+  currently_enrolled: null
   degree_level: "Bachelor's"
   major: Computer Science
   start_date: null               # e.g. "2024-09"; asked on forms with start/end dates

@@ -86,3 +86,52 @@ def write_answer(cfg, question, company, role, job_text, limit=None, chat=None) 
         if limit and len(out) > limit and not bad:
             bad = [f"over {limit} characters"]
     return None
+
+
+def facts_sheet(profile) -> str:
+    """Everything the model may rely on. No phone, email, address or file paths."""
+    ed = profile.get("education", {}); wa = profile.get("work_authorization", {}); pr = profile.get("preferences", {})
+    lines = [f"{k.replace('_', ' ')}: {v}" for k, v in {**ed, **{"authorized to work in the US": wa.get("authorized_us"), "requires sponsorship": wa.get("requires_sponsorship")},
+             **{k: v for k, v in pr.items() if isinstance(v, (bool, str, int, float)) and v not in (None, "")}}.items() if v not in (None, "")]
+    f = profile.get("facts", {}) or {}
+    for k in ("projects", "experience", "skills", "interests"):
+        for v in f.get(k) or []:
+            lines.append(f"{k}: {v}")
+    return "\n".join(lines)
+
+
+def _norm(t):
+    return re.sub(r"[^a-z0-9 ]+", " ", str(t).lower()).split()
+
+
+def pick_grounded(cfg, question, options, profile, chat=None):
+    """Return option index (or short text) only if the model quotes evidence that really is in the facts sheet. Else None."""
+    import json
+    sheet = facts_sheet(profile)
+    system = ("Answer an application question using ONLY the facts. If the facts do not clearly settle it, answer null. "
+              'Reply with JSON only: {"answer": <exact option text or short answer or null>, "evidence": "<exact phrase copied from the facts>"}')
+    user = f"Facts:\n{sheet}\n\nQuestion: {question}\n" + (f"Options: {json.dumps(options)}\n" if options else "")
+    chat = chat or (lambda s, u: _chat({"llm": {}} if False else CFG_FOR_CHOICE[0], s, u))
+    try:
+        raw = chat(system, user)
+        m = re.search(r"\{.*\}", raw, re.S)
+        data = json.loads(m.group(0))
+    except Exception:
+        return None
+    ans, ev = data.get("answer"), data.get("evidence")
+    if ans in (None, "", "null") or not ev:
+        return None
+    sheet_tokens = " ".join(_norm(sheet))
+    if " ".join(_norm(ev)) not in sheet_tokens:      # the quoted evidence must really exist in the facts
+        return None
+    if options:
+        for i, o in enumerate(options):
+            if _norm(o) == _norm(ans):
+                return i
+        return None
+    if style_violations(str(ans)) or len(str(ans)) > 200:
+        return None
+    return str(ans)
+
+
+CFG_FOR_CHOICE = [{}]
