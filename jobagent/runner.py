@@ -19,7 +19,8 @@ class Outcome:
     evidence: str = ""
     resume: str = ""
     questions: list = field(default_factory=list)
-    submitted: bool = False      # the final submit button was actually clicked
+    submitted: bool = False      # the final submit button was actually clicked (or handed to the user)
+    keep_page: bool = False      # hand-off: leave the filled tab open for the user's click
 
 
 class Ctx:
@@ -204,10 +205,26 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                 return Outcome("FAILED", "pre-submit check: " + "; ".join(problems)[:300], evidence=shot(page, job, "precheck"), questions=asked)
             if not live:
                 return Outcome("NOT_STARTED", "DRYRUN_OK", evidence=shot(page, job, "dryrun"), resume=resume_path or "", questions=asked)
+            if cfg.get("handoff", "fallback") == "always":   # the human makes the final click; invisible reCAPTCHA rejects automated ones
+                try:
+                    page.bring_to_front()
+                    sub.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                return Outcome("READY_TO_SUBMIT", "form filled: click Submit in the open tab", evidence=shot(page, job, "ready"),
+                               resume=resume_path or "", questions=asked, submitted=True, keep_page=True)
             before = page.url
             sub.click()
             settle(page)
-            return confirm_submission(page, job, adapter, before, resume_path or "", asked)
+            out = confirm_submission(page, job, adapter, before, resume_path or "", asked)
+            if out.status == "BLOCKED" and "anti-bot" in out.reason and cfg.get("handoff", "fallback") != "never":
+                # the agent tried on its own and the site rejected it; the filled form is still on screen, so hand it to the user
+                try:
+                    page.bring_to_front()
+                except Exception:
+                    pass
+                out.status, out.reason, out.keep_page = "READY_TO_SUBMIT", "auto-submit was rejected by the site: click Submit in the open tab", True
+            return out
         if nxt:
             nxt.click()
             settle(page)

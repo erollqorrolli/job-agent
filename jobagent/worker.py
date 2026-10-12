@@ -48,6 +48,8 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
     db.kv_set("control", "run")
     db.kv_set("current", None)
     done, tried, host_last = 0, set(), {}
+    ready = {}    # job id -> (page, job) waiting for the user's Submit click
+    db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='READY_TO_SUBMIT'")   # tabs from a previous run are gone
     pw = sync_playwright().start()
     ctx = None
     try:
@@ -66,6 +68,12 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                     db.kv_set("last_ingest", time.time() - cfg.get("poll_minutes", 120) * 60 + 600)
             if done >= (once_limit or cfg.get("max_per_session", 50)):
                 log("session limit reached"); break
+            poll_ready(db, ready, log)
+            if len(ready) >= cfg.get("max_ready_tabs", 8):   # don't pile up unlimited tabs; keep polling until some are submitted
+                db.kv_set("current", f"{len(ready)} forms ready: click Submit in the browser tabs")
+                time.sleep(5); continue
+            # jobs the user just answered are eligible again within this session
+            tried &= {r["id"] for r in db.q("SELECT id FROM jobs WHERE status IN ('APPLIED','UNCERTAIN','ALREADY_APPLIED','INELIGIBLE','CLOSED','FAILED','BLOCKED','READY_TO_SUBMIT')")}
             job = next_job(db, cfg, tried, platform)
             if not job:
                 if once_limit:
@@ -96,10 +104,14 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                     ctx = None
                 db.log(job["id"], traceback.format_exc()[-400:])
             finally:
-                try: page and page.close()
+                try:
+                    if not (locals().get("out") is not None and getattr(out, "keep_page", False)):
+                        page and page.close()
                 except Exception: pass
             host_last[host] = time.time()
             apply_outcome(db, cfg, job, out)
+            if getattr(out, "keep_page", False):
+                ready[job["id"]] = (page, job)
             tried.add(job["id"])
             # the session cap counts real submissions in live mode; jobs parked for your input don't use it up
             if not cfg.get("live_submit") or out.submitted:
@@ -119,6 +131,25 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             pass
         pw.stop()
     return done
+
+
+def poll_ready(db, ready: dict, log=print):
+    """Check tabs the user was asked to submit. Confirmed -> APPLIED; closed without confirmation -> back to the user."""
+    from . import detect
+    from .adapters import adapter_for
+    from .runner import shot
+    for jid, (page, job) in list(ready.items()):
+        try:
+            if page.is_closed():
+                db.update(jid, status="UNCERTAIN", status_reason="tab closed before a confirmation was seen. Check your email")
+                ready.pop(jid); continue
+            c = detect.confirmation(page, adapter_for(job["platform"]))
+            if c:
+                db.update(jid, status="APPLIED", status_reason="confirmed", submitted_at=time.time(), evidence=f"{c} | {shot(page, job, 'confirm')}")
+                log(f"APPLIED (confirmed)  {job['company']} - {job['title']}")
+                page.close(); ready.pop(jid)
+        except Exception:
+            ready.pop(jid, None)
 
 
 def apply_outcome(db, cfg, job, out: Outcome):
