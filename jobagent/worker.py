@@ -102,7 +102,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             apply_outcome(db, cfg, job, out)
             tried.add(job["id"])
             # the session cap counts real submissions in live mode; jobs parked for your input don't use it up
-            if not cfg.get("live_submit") or out.status in ("APPLIED", "UNCERTAIN", "ALREADY_APPLIED"):
+            if not cfg.get("live_submit") or out.submitted:
                 done += 1
             log(f"{out.status:18} {job['company'][:24]:24} {job['title'][:40]:40} {out.reason}")
             if out.status == "NEEDS_USER_INPUT":
