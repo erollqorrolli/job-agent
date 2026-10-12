@@ -259,6 +259,10 @@ def confirm_submission(page, job, adapter, before_url, resume, asked) -> Outcome
         return Outcome("BLOCKED", "captcha at submit", evidence=shot(page, job, "captcha"), resume=resume, questions=asked)
     if errs:
         return Outcome("FAILED", "validation after submit: " + "; ".join(errs)[:300], evidence=shot(page, job, "err"), resume=resume, questions=asked)
+    if page.query_selector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, .h-captcha'):
+        # the form is still on screen and an anti-bot widget is present: the site most likely rejected the automated submit silently.
+        return Outcome("BLOCKED", "no confirmation and anti-bot widget present: likely rejected as automated. Open the link and submit by hand",
+                       evidence=shot(page, job, "silent_reject"), resume=resume, questions=asked)
     changed = page.url != before_url and adapter.confirm_url.search(page.url)
     return Outcome("UNCERTAIN", "submit clicked, no confirmation text" + (" (url changed)" if changed else ""),
                    evidence=shot(page, job, "uncertain"), resume=resume, questions=asked)

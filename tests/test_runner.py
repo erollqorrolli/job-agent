@@ -144,3 +144,8 @@ def test_review_queue_is_capped(page, db, site, profile, tmp_path):
     assert [o.reason for o in outs[:2]] == ["tailored resume awaiting your review"] * 2
     assert [o.reason for o in outs[2:]] == ["DEFER_REVIEW"] * 2
     assert db.q("SELECT COUNT(*) n FROM human_queue WHERE kind='resume'")[0]["n"] == 2
+
+
+def test_silent_submit_with_antibot_widget_is_blocked_not_applied(page, db, site, profile):
+    out = run(page, db, site, "silent_recaptcha.html", live=True)
+    assert out.status == "BLOCKED" and "submit by hand" in out.reason
