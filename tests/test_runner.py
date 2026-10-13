@@ -2,8 +2,8 @@ from conftest import make_job
 from jobagent.runner import process
 from mock_site.server import SUBMITS
 
-GOOD = lambda s, u: "I like building stuff and figuring out how things work. I made a small web app for course schedules and want to get better at that with a team."
-BAD = lambda s, u: "I am incredibly passionate about leveraging innovative technology."
+GOOD = lambda s, u: "OK" if s.startswith("You check") else "I like building stuff and figuring out how things work. I made a small web app for course schedules and want to get better at that with a team."
+BAD = lambda s, u: "OK" if s.startswith("You check") else "I am incredibly passionate about leveraging innovative technology."
 
 
 def run(page, db, site, name, live=False, chat=GOOD, **cfg):

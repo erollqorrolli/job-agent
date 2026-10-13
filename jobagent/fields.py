@@ -92,7 +92,7 @@ DECLINE = re.compile(r"decline|prefer not|do not wish|don'?t wish|not to (say|an
 # (label regex, profile path | callable). Order matters: first match wins.
 RULES = [
     (r"full name|first and last|legal name|your name|^name\b", lambda p: f"{get(p,'identity.first_name')} {get(p,'identity.last_name')}"),
-    (r"first name|given name|legal first|preferred first", "identity.first_name"),
+    (r"first name|given name|legal first|preferred first|preferred name", "identity.first_name"),
     (r"last name|family name|surname|preferred last", "identity.last_name"),
     (r"e-?mail", "identity.email"),
     (r"phone|mobile|telephone", "identity.phone"),
@@ -121,6 +121,8 @@ BOOL_RULES = [
 ]
 # yes/no facts the user has confirmed; checked BEFORE the legal-declaration guard
 PREF_BOOL = [
+    (r"only interested in a summer|confirm that you are only interested|summer (internship )?(only|term)", "preferences.summer_2027_only"),
+    (r"returning to (an? )?(undergraduate|graduate|school|degree|program)|return to (school|your (studies|program))", "education.currently_enrolled"),
     (r"enrolled in|currently (a |an )?(student|enrolled)|pursuing (a |an )?(bachelor|master|phd|degree)|accredited (college|university)", "education.currently_enrolled"),
     (r"relative|family member|related to (any|an)|spouse", "preferences.has_relative_at_company"),
     (r"government (employee|official)|public official|elected official", "preferences.government_employee"),
@@ -184,7 +186,11 @@ def pick_option(options, want) -> int | None:
         for i, o in enumerate(options):
             if (YES if want else NO).match(o.strip()):
                 return i
-        return None
+        # sentences instead of Yes/No: "I understand and I am only interested in...", "I have not previously been..."
+        pos = re.compile(r"\b(understand|confirm|agree|acknowledge|only interested|i am (currently )?(a|an|enrolled)|i do)\b", re.I)
+        neg = re.compile(r"\b(not|never|none|other terms|do not|don't)\b", re.I)
+        hits = [i for i, o in enumerate(options) if (pos.search(o) and not neg.search(o)) == bool(want) and (pos.search(o) or neg.search(o))]
+        return hits[0] if len(hits) == 1 else None
     w = str(want).lower()
     norm = lambda t: re.sub(r"[\s/.\-]", "", t)
     for i, o in enumerate(low):
@@ -194,6 +200,31 @@ def pick_option(options, want) -> int | None:
         if w and (w in o or (len(o) > 2 and o in w)):
             return i
     return None
+
+
+STATES = {"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+          "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky",
+          "LA": "Louisiana", "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
+          "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
+          "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+          "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin",
+          "WY": "Wyoming", "DC": "District of Columbia"}
+
+
+def variants_for(label: str, value: str, p) -> list:
+    """Alternative spellings of a confirmed fact, tried in order against a dropdown's options."""
+    v = str(value)
+    out = [v]
+    if v.upper() in STATES:
+        out += [STATES[v.upper()]]
+    for ab, nm in STATES.items():
+        if v.lower() == nm.lower():
+            out += [ab]
+    m = re.match(r"(\d{2})/(\d{4})$", v)
+    if m:
+        mo, y = int(m.group(1)), m.group(2)
+        out += [f"{MONTHS[mo-1]} {y}", f"{MONTHS[mo-1][:3]} {y}", f"{mo}/{y}", y, f"Spring {y}" if mo <= 6 else f"Fall {y}", f"{MONTHS[mo-1]}, {y}"]
+    return out
 
 
 def pick_range(options, x: float):
@@ -294,7 +325,7 @@ def decide(f: dict, ctx) -> Decision:
                 i = pick_option(opts, bool(v))
                 return Decision(value=i, source="profile") if i is not None else Decision(need=(label, kind))
             return Decision(value="Yes" if v else "No", source="profile")
-    if re.search(r"previous(ly)? (employ|work)|worked (for|at) .* before|former employee|have you (ever )?(worked|been employed) (at|for|with)", label, re.I):
+    if re.search(r"previous(ly)? (been )?(employ|work)|worked (for|at) .* before|former employee|have you (ever )?(worked|been employed) (at|for|with)", label, re.I):
         prior = [c.lower() for c in (get(p, "preferences.previously_worked_for_companies") or [])]
         if any(c and c in label.lower() for c in prior):
             return Decision(need=(label, kind))
@@ -335,6 +366,12 @@ def decide(f: dict, ctx) -> Decision:
             if i is not None:
                 return Decision(value=i, source="profile")
         return Decision(need=(label, kind))
+    if re.search(r"how did you (first )?(hear|find|learn)", label, re.I) and opts:
+        for alt in (get(p, "preferences.how_did_you_hear_options") or ["Simplify", "GitHub", "Job board", "Online", "Website", "Other"]):
+            i = pick_option(opts, alt)
+            if i is not None:
+                return Decision(value=i, source="profile")
+        return Decision(need=(label, kind))
     for pat, path in RULES:
         if re.search(pat, label, re.I):
             v = path(p) if callable(path) else get(p, path)
@@ -343,7 +380,7 @@ def decide(f: dict, ctx) -> Decision:
             if path == "education.graduation_date":
                 v = fmt_date(v, label)
             if kind in ("select", "radio", "combobox", "btngroup"):
-                i = pick_option(opts, v)
+                i = next((k for k in (pick_option(opts, alt) for alt in variants_for(label, v, p)) if k is not None), None)
                 if i is None and path == "education.degree":
                     i = pick_option(opts, get(p, "education.degree_level") or "")
                 if i is None and kind == "combobox":

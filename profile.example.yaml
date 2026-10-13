@@ -31,6 +31,8 @@ preferences:
   willing_onsite: null
   has_prior_experience: null
   current_employer: null
+  summer_2027_only: null
+  how_did_you_hear_options: [Other]
   available_full_duration: null
   willing_to_relocate: null
   salary_expectation: null

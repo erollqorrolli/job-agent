@@ -35,6 +35,16 @@ def clean_output(t: str) -> str:
     return META.sub("", t).strip().strip('"')
 
 
+def _supported(chat, answer, profile) -> bool:
+    """Second pass: ask the model to check its own answer against the facts. Weak but catches blatant inventions."""
+    try:
+        verdict = chat("You check job application answers. Reply with exactly OK if every claim about the applicant is supported by the FACTS, "
+                       "otherwise reply BAD.", f"FACTS:\n{facts_sheet(profile)}\n\nANSWER:\n{answer}")
+    except Exception:
+        return True
+    return verdict.strip().upper().startswith("OK")
+
+
 def llm_configured() -> bool:
     base = os.environ.get("LLM_BASE_URL", "")
     return bool(os.environ.get("LLM_API_KEY") or "localhost" in base or "127.0.0.1" in base)
@@ -66,10 +76,19 @@ def has_enough_facts(profile) -> bool:
     return any(f.get(k) for k in ("projects", "experience"))
 
 
+PERSONAL_EXPERIENCE = re.compile(r"\bhave you (ever |previously |already )?(used|tried|visited|taken|attended|worked|volunteered|participated|applied|interned|been|met|spoken|heard)\b|"
+                                 r"\bdo you (know|use)\b|\bwere you referred\b|\bhow did you (hear|find|learn)\b", re.I)
+
+
+def question_needs_the_user(question, company, profile) -> bool:
+    """Personal-history questions (\"have you used X before?\") can't be answered from the profile; a model would invent a yes or no."""
+    return bool(PERSONAL_EXPERIENCE.search(question)) and company.lower() not in facts_sheet(profile).lower()
+
+
 def write_answer(cfg, question, company, role, job_text, limit=None, chat=None) -> str | None:
     """Returns text or None (=> human queue). `chat` injectable for tests."""
     profile = load_profile()
-    if not has_enough_facts(profile):
+    if not has_enough_facts(profile) or question_needs_the_user(question, company, profile):
         return None
     chat = chat or (lambda s, u: _chat(cfg, s, u))
     user = (f"Company: {company}\nRole: {role}\nAbout the role (from the posting, may be partial):\n{job_text[:2500]}\n\n"
@@ -84,7 +103,9 @@ def write_answer(cfg, question, company, role, job_text, limit=None, chat=None) 
         if out.strip() == "INSUFFICIENT_FACTS":
             return None
         out = clean_output(out)
-        bad = style_violations(out)
+        bad = [b for b in style_violations(out) if b not in question.lower()]
+        if not bad and not _supported(chat, out, profile):
+            bad = ["claims not in your profile"]
         if not bad and (not limit or len(out) <= limit):
             return out.strip()
         if limit and len(out) > limit and not bad:

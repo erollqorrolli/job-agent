@@ -30,6 +30,8 @@ def proc_alive():
 
 @app.get("/api/state")
 def state():
+    db.x("""DELETE FROM human_queue WHERE resolved_at IS NULL AND job_id IN
+            (SELECT id FROM jobs WHERE status IN ('APPLIED','ALREADY_APPLIED','INELIGIBLE','CLOSED'))""")   # questions for jobs that no longer matter
     c = db.counts()
     total = sum(c.values())
     hour = db.q("SELECT COUNT(*) n FROM jobs WHERE status='APPLIED' AND submitted_at>?", (time.time() - 3600,))[0]["n"]

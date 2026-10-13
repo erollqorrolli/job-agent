@@ -112,3 +112,37 @@ def test_counts_and_free_text_never_auto_used(db, profile):
     c.choice_fn = lambda q, o: pick_grounded({}, q, o, profile, chat=txt)
     r = fields.decide({"kind": "text", "label": "Favorite language?", "required": True, "id": "x"}, c)
     assert r.need and r.need[1] == "draft"
+
+
+def test_state_variants_graduation_variants_and_how_heard(db, profile):
+    profile["identity"]["address"]["state"] = "PA"
+    r = d(db, profile, "Which U.S. State or Canadian Province do you reside in?*", "combobox", ("Pennsylvania", "Ohio", "Ontario"))
+    assert r.value == 0
+    r = d(db, profile, "What is your graduation date?*", "combobox", ("December 2027", "May 2028", "December 2028"))
+    assert r.value == 1
+    profile["preferences"]["how_did_you_hear_options"] = ["Simplify", "Job board", "Other"]
+    assert d(db, profile, "How did you hear about this job?*", "combobox", ("LinkedIn", "Referral", "Other")).value == 2
+    assert d(db, profile, "How did you hear about this job?*", "combobox", ("LinkedIn", "Referral")).need     # nothing truthful to pick
+
+
+def test_previously_employed_and_summer_confirm(db, profile):
+    profile["preferences"]["summer_2027_only"] = True
+    opts = ("I have not previously been employed at Affirm", "I have been employed at Affirm as an intern")
+    assert d(db, profile, "Have you previously been employed at Affirm for any length of time?*", "combobox", opts).value == 0
+    r = d(db, profile, "Please confirm that you are only interested in a Summer internship from May to August of 2027.*", "combobox",
+          ("I understand and I am only interested in a Summer 2027 internship", "I am interested in other terms"))
+    assert r.value == 0
+    assert d(db, profile, "Preferred Name*", "text", ()).value == "Test"
+
+
+def test_personal_history_questions_are_not_answered_by_the_model(profile):
+    from jobagent.answers import question_needs_the_user
+    assert question_needs_the_user("Have you used Khan Academy before? What excites you?", "Khan Academy", profile)
+    assert not question_needs_the_user("Why are you interested in this internship?", "Khan Academy", profile)
+
+
+def test_banned_words_echoed_from_the_question_are_allowed(profile, monkeypatch):
+    from jobagent import answers
+    outs = iter(["Education software matters to me and my backend work could help the mission.", "OK"])
+    r = answers.write_answer({}, "How does our mission align with your goals?", "Acme", "Intern", "Acme builds learning tools.", chat=lambda s, u: next(outs))
+    assert r and "mission" in r
