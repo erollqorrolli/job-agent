@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from .config import DB_PATH
 
 STATUSES = ["NOT_STARTED", "IN_PROGRESS", "APPLIED", "ALREADY_APPLIED", "NEEDS_USER_INPUT",
-            "BLOCKED", "FAILED", "CLOSED", "INELIGIBLE", "UNCERTAIN", "READY_TO_SUBMIT"]
+            "BLOCKED", "FAILED", "CLOSED", "INELIGIBLE", "UNCERTAIN", "READY_TO_SUBMIT", "SKIPPED"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs(
@@ -90,6 +90,14 @@ class DB:
             left = self.q("SELECT 1 FROM human_queue WHERE job_id=? AND resolved_at IS NULL", (r["job_id"],))
             if not left:
                 self.x("UPDATE jobs SET status='NOT_STARTED', status_reason='answered, queued to retry', retries=0, next_try_at=0 WHERE id=? AND status='NEEDS_USER_INPUT'", (r["job_id"],))
+
+    def skip_question(self, qkey):
+        """The user does not want to answer this question: skip every job waiting on it and drop those jobs' open questions."""
+        jobs = [r["job_id"] for r in self.q("SELECT DISTINCT job_id FROM human_queue WHERE qkey=? AND resolved_at IS NULL", (qkey,))]
+        for j in jobs:
+            self.x("UPDATE jobs SET status='SKIPPED', status_reason='skipped by you', next_try_at=9999999999 WHERE id=?", (j,))
+            self.x("DELETE FROM human_queue WHERE job_id=? AND resolved_at IS NULL", (j,))
+        return len(jobs)
 
     def counts(self):
         c = {s: 0 for s in STATUSES}

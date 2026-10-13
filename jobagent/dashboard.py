@@ -141,7 +141,7 @@ def resume_file():
 @app.post("/api/mark")
 def mark():
     d = request.json or {}
-    if d.get("status") not in ("APPLIED", "ALREADY_APPLIED", "INELIGIBLE", "NOT_STARTED"):
+    if d.get("status") not in ("APPLIED", "ALREADY_APPLIED", "INELIGIBLE", "NOT_STARTED", "SKIPPED"):
         return jsonify(error="bad status"), 400
     db.x("UPDATE jobs SET status=?, status_reason='set by you', next_try_at=? WHERE id=?",
          (d["status"], 0 if d["status"] == "NOT_STARTED" else 9999999999, d["id"]))
@@ -204,3 +204,8 @@ def ask_ollama():
         return jsonify(draft=text, warnings=problems)
     except Exception as e:
         return jsonify(error=f"Ollama isn't responding ({type(e).__name__}). Is it running?")
+
+
+@app.post("/api/skip")
+def skip():
+    return jsonify(ok=True, skipped=db.skip_question((request.json or {}).get("qkey")))

@@ -58,3 +58,16 @@ def test_ready_jobs_are_never_refilled_after_restart(db, profile):
     st = {r["id"]: r["status"] for r in db.q("SELECT id,status FROM jobs")}
     assert st["id1"] == "UNCERTAIN"          # may already have been submitted by hand: never auto-requeued
     assert st["id2"] == "NOT_STARTED"        # a crash mid-fill is safe to retry
+
+
+def test_skip_question_skips_every_job_waiting_on_it_and_clears_their_questions(db, profile):
+    cfg = {"term": "Summer 2027", "countries": ["US"]}
+    ingest(db, cfg, [item(1), item(2, title="ML Intern", url="https://x.com/2"), item(3, title="Data Intern", url="https://x.com/3")])
+    for j in ("id1", "id2"):
+        db.update(j, status="NEEDS_USER_INPUT"); db.add_need(j, "shared q", "Shared question?", "text", [])
+    db.add_need("id1", "other q", "Another?", "text", [])
+    assert db.skip_question("shared q") == 2
+    st = {r["id"]: r["status"] for r in db.q("SELECT id,status FROM jobs")}
+    assert st["id1"] == st["id2"] == "SKIPPED" and st["id3"] == "NOT_STARTED"
+    assert not db.q("SELECT 1 FROM human_queue WHERE resolved_at IS NULL")           # id1's other question went with it
+    assert not db.q("SELECT 1 FROM jobs WHERE id IN ('id1','id2') AND next_try_at < 9999999999")   # never picked up again
