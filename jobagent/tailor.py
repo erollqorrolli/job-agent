@@ -199,3 +199,18 @@ def tailor_fit(src_docx, job_text, bank, out_docx, pages_fn=None):
     shutil.copy(src_docx, out_docx)
     pdf = to_pdf(out_docx)
     return (pdf or out_docx), {"matched": [], "added_used": [], "added_course": [], "reordered": False, "pages": base_pages}
+
+
+def fresh_pdf(docx, pdf, out_dir):
+    """The fallback PDF must never lag behind the docx the user edits. Re-export when the docx is newer."""
+    docx, pdf = Path(docx), Path(pdf) if pdf else None
+    if pdf and pdf.exists() and docx.exists() and pdf.stat().st_mtime >= docx.stat().st_mtime:
+        return str(pdf)
+    if not docx.exists():
+        return str(pdf) if pdf else None
+    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = out_dir / "Base_Resume.docx"
+    shutil.copy(docx, tmp)
+    new = to_pdf(tmp)
+    tmp.unlink(missing_ok=True)
+    return str(new) if new else (str(pdf) if pdf else None)

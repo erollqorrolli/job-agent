@@ -7,7 +7,7 @@ from .answers import write_answer, llm_configured, pick_grounded, CFG_FOR_CHOICE
 from .config import SHOTS
 from .profile import load_profile, get, verified, norm_key
 from .config import DATA
-from .tailor import tailor_fit
+from .tailor import tailor_fit, fresh_pdf
 
 MAX_STEPS = 10
 
@@ -149,6 +149,9 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
         return Outcome("NEEDS_USER_INPUT", "account/sign-in required", evidence=shot(page, job, "login"))
     page_text = detect.body_text(page)
     resume_path = pick_resume(profile, job.get("category"))
+    base_docx = next((r.get("docx") for r in profile.get("resumes") or [] if r.get("docx") and r.get("path") == resume_path), None)
+    if base_docx:
+        resume_path = fresh_pdf(base_docx, resume_path, DATA / "resumes" / "base") or resume_path
     resume_path, review = maybe_tailor(db, cfg, profile, job, page_text, resume_path)
     if review:
         review.evidence = shot(page, job, "review")
@@ -156,6 +159,7 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
     ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat) \
         if (answer_chat or llm_configured()) else None
     ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"])
+    ctx.company = job["company"]
     CFG_FOR_CHOICE[0] = cfg
     if answer_chat or llm_configured():
         ctx.choice_fn = lambda q, opts: pick_grounded(cfg, q, opts, profile, chat=answer_chat)
@@ -278,6 +282,11 @@ def _confirm(page, job, adapter, before_url, resume, asked) -> Outcome:
         t = detect.body_text(page)
         if detect.ALREADY.search(t):
             return Outcome("ALREADY_APPLIED", "site says already applied", evidence=shot(page, job, "already"), resume=resume, questions=asked)
+    if detect.EMAIL_CODE.search(detect.body_text(page)):
+        # the site emailed a code to prove a human is applying. We never read the user's inbox or try to get past it:
+        # leave the tab open and tell the user exactly what to do.
+        return Outcome("READY_TO_SUBMIT", "email verification code needed: enter the code from your email in the open tab, then click Submit",
+                       evidence=shot(page, job, "needs_code"), resume=resume, questions=asked, keep_page=True)
     errs = detect.errors(page)
     if detect.has_captcha(page):
         return Outcome("BLOCKED", "captcha at submit", evidence=shot(page, job, "captcha"), resume=resume, questions=asked)

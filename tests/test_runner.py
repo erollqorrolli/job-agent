@@ -168,3 +168,8 @@ def test_handoff_leaves_tab_open_and_detects_the_users_click(page, db, site, pro
     page.wait_for_timeout(500)
     poll_ready(db, ready, log=lambda *a: None)
     assert not ready and db.q("SELECT status FROM jobs")[0]["status"] == "APPLIED"
+
+
+def test_email_verification_code_is_handed_to_the_user(page, db, site, profile):
+    out = run(page, db, site, "needs_code.html", live=True)
+    assert out.status == "READY_TO_SUBMIT" and out.keep_page and "verification code" in out.reason

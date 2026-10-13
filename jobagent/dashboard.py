@@ -43,7 +43,7 @@ def state():
         dryrun_ok=db.q("SELECT COUNT(*) n FROM jobs WHERE last_error='DRYRUN_OK'")[0]["n"],
         current=db.kv_get("current"), control=db.kv_get("control", "stop"), running=proc_alive(),
         settings={k: cfg.get(k) for k in SETTINGS}, profile_ok=verified(p), profile_missing=missing_required(p),
-        latest=db.q("SELECT company,title,status,status_reason,datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t FROM jobs WHERE attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 15"),
+        latest=db.q("SELECT company,title,status,status_reason,resume_used,datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t FROM jobs WHERE attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 15"),
         needs=db.q("SELECT qkey,question,kind,options,COUNT(*) n FROM human_queue WHERE resolved_at IS NULL GROUP BY qkey ORDER BY n DESC LIMIT 50"),
         events=db.q("SELECT datetime(ts,'unixepoch','localtime') t, msg FROM events ORDER BY id DESC LIMIT 8"))
 
@@ -146,3 +146,33 @@ def mark():
     db.x("UPDATE jobs SET status=?, status_reason='set by you', next_try_at=? WHERE id=?",
          (d["status"], 0 if d["status"] == "NOT_STARTED" else 9999999999, d["id"]))
     return jsonify(ok=True)
+
+
+@app.get("/api/resume")
+def resume_info():
+    import datetime, hashlib
+    from pathlib import Path
+    out = []
+    for r in load_profile().get("resumes") or []:
+        item = {"tags": r.get("tags"), "files": []}
+        for kind in ("docx", "path"):
+            f = r.get(kind)
+            if not f:
+                continue
+            p = Path(f)
+            if p.exists():
+                st = p.stat()
+                item["files"].append({"role": "source (tailored for each job)" if kind == "docx" else "fallback PDF", "path": str(p),
+                                      "modified": datetime.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"), "mtime": st.st_mtime,
+                                      "size_kb": round(st.st_size / 1024), "sha": hashlib.sha1(p.read_bytes()).hexdigest()[:8]})
+            else:
+                item["files"].append({"role": kind, "path": str(p), "missing": True})
+        files = {f["role"].split(" ")[0]: f for f in item["files"] if not f.get("missing")}
+        item["warning"] = None
+        if "source" in files and "fallback" in files and files["fallback"]["mtime"] < files["source"]["mtime"]:
+            item["warning"] = "The fallback PDF is older than the docx. The agent re-exports it automatically before using it."
+        if any(f.get("missing") for f in item["files"]):
+            item["warning"] = "A resume file is missing."
+        out.append(item)
+    recent = db.q("SELECT company, resume_used, datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t FROM jobs WHERE resume_used IS NOT NULL AND resume_used != '' ORDER BY attempted_at DESC LIMIT 5")
+    return jsonify(resumes=out, recent=recent, tailoring=effective_cfg(db).get("tailor_resume", True))

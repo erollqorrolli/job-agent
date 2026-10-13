@@ -146,3 +146,26 @@ def test_banned_words_echoed_from_the_question_are_allowed(profile, monkeypatch)
     outs = iter(["Education software matters to me and my backend work could help the mission.", "OK"])
     r = answers.write_answer({}, "How does our mission align with your goals?", "Acme", "Intern", "Acme builds learning tools.", chat=lambda s, u: next(outs))
     assert r and "mission" in r
+
+
+def test_internship_question_phrasing_and_unreadable_options(db, profile):
+    profile["preferences"]["has_prior_experience"] = True
+    assert d(db, profile, "Have you completed an internship in Software Engineering?*", "combobox", ("Yes", "No")).value == 0
+    r = d(db, profile, "Have you completed an internship in Software Engineering?*", "combobox", ())    # options could not be read
+    assert r.value == "Yes"
+
+
+def test_compound_question_gets_a_draft_for_the_user_not_an_auto_answer(db, profile):
+    import json
+    from jobagent import answers
+    c = ctx(db, profile); c.company = "Khan Academy"
+    c.answer_fn = lambda q, limit=None: "I like building things for learning."
+    r = fields.decide({"kind": "textarea", "label": "Have you used Khan Academy before? What excites you about interning here?", "required": True, "id": "x"}, c)
+    assert r.need and r.need[1] == "draft"
+    outs = iter(["Education tools matter to me and I like backend work.", "OK"])
+    seen = []
+    def chat(s_, u):
+        seen.append(u); return next(outs)
+    q = "Have you used Khan Academy before? Tell us why you want to intern here and what you hope to learn from the team this summer."
+    txt = answers.write_answer({}, q, "Khan Academy", "Intern", "Khan Academy builds free learning software.", chat=chat)
+    assert txt and "Do not say whether the applicant has used" in seen[0]

@@ -77,3 +77,6 @@ def errors(page) -> list[str]:
         return page.evaluate(ERRORS_JS)
     except Exception:
         return []
+
+
+EMAIL_CODE = re.compile(r"verification code (was|has been) sent|enter the \d+[- ]character code|security code|confirm you.?re a human", re.I)

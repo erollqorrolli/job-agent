@@ -88,8 +88,13 @@ def question_needs_the_user(question, company, profile) -> bool:
 def write_answer(cfg, question, company, role, job_text, limit=None, chat=None) -> str | None:
     """Returns text or None (=> human queue). `chat` injectable for tests."""
     profile = load_profile()
-    if not has_enough_facts(profile) or question_needs_the_user(question, company, profile):
+    if not has_enough_facts(profile):
         return None
+    compound = question_needs_the_user(question, company, profile)
+    if compound and len(question) <= 120:
+        return None          # a short "have you used X?" can only be answered by the user
+    if compound:
+        question = question + "\n(Do not say whether the applicant has used, visited or worked with the company before: that is not in the facts. Answer only the rest of the question.)"
     chat = chat or (lambda s, u: _chat(cfg, s, u))
     user = (f"Company: {company}\nRole: {role}\nAbout the role (from the posting, may be partial):\n{job_text[:2500]}\n\n"
             f"My real background (only use this):\n{facts_block(profile)}\n\nQuestion: {question}\n"

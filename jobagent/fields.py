@@ -130,7 +130,7 @@ PREF_BOOL = [
     (r"(current(ly)?|any|other) (job )?offers?\b|offers? (from|with|pending)", "preferences.has_other_offers"),
     (r"on-?site|in-?office|in[- ]person|hybrid|days (a|per) week|work (from|in) (the )?office", "preferences.willing_onsite"),
     (r"40 hours|full[- ]time (commitment|during|for the)|(entire|full) (duration|length|term) of|commit(ted)? to (work|being|the)", "preferences.available_full_duration"),
-    (r"previously completed .*internship|relevant (full-time )?(work )?experience", "preferences.has_prior_experience"),
+    (r"(previously |already )?(completed|had|done|held|have)( at least)? (an?|any|one|1|prior|previous)( software( engineering)?| technical)? internship|previously completed .*internship|relevant (full-time )?(work )?experience|prior (internship|work) experience", "preferences.has_prior_experience"),
 ]
 EEO = re.compile(r"gender|race|ethnic|veteran|disabilit|sexual orientation|transgender|hispanic|latino|pronoun|protected", re.I)
 # legal declarations the user must approve explicitly
@@ -309,6 +309,8 @@ def decide(f: dict, ctx) -> Decision:
                 i = pick_option(opts, bool(v))
                 if i is not None:
                     return Decision(value=i, source="profile")
+                if kind == "combobox" and not opts:    # option list could not be read: type Yes/No and let the widget match it
+                    return Decision(value="Yes" if v else "No", source="profile")
             elif kind in ("text", "textarea") and not f.get("required") and len(label) < 60:
                 break
             else:
@@ -402,6 +404,9 @@ def decide(f: dict, ctx) -> Decision:
         if (kind == "textarea" or len(label) > 40) and f.get("required"):
             ans = ctx.answer_fn(label, f.get("maxlength"))
             if ans:
+                from .answers import question_needs_the_user
+                if getattr(ctx, "company", None) and question_needs_the_user(label, ctx.company, p):
+                    return Decision(need=(label, "draft", ans))      # contains a personal-history question: the user edits it
                 if get(p, "preferences.trust_llm_answers") is True:
                     return Decision(value=ans, source="llm")
                 # unreviewed model text is never submitted: park it as a draft for one-click approval

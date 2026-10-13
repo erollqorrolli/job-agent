@@ -48,3 +48,17 @@ def test_projects_reorder_by_relevance_and_bullets_untouched(tmp_path):
     texts = [p.text for p in Document(str(tmp_path / "o.docx")).paragraphs]
     assert info["reordered"] and texts.index("Agent tool | Python, FastAPI") < texts.index("Graph tool | Python")
     assert "• Built a thing with Python and Docker" in texts
+
+
+def test_fallback_pdf_is_refreshed_when_docx_is_newer(tmp_path):
+    import os, shutil
+    from jobagent.tailor import fresh_pdf, SOFFICE
+    from pathlib import Path
+    if not Path(SOFFICE).exists():
+        return
+    src = tmp_path / "r.docx"; make(src)
+    old = tmp_path / "r.pdf"; old.write_bytes(b"%PDF-1.4 stale")
+    os.utime(old, (1, 1))                                   # PDF is much older than the docx
+    new = fresh_pdf(src, old, tmp_path / "base")
+    assert new != str(old) and Path(new).exists() and Path(new).stat().st_size > 1000
+    assert fresh_pdf(src, new, tmp_path / "base") == new    # up to date -> reused, not regenerated

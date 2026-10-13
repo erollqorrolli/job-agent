@@ -31,6 +31,7 @@ input,select{font:inherit;padding:6px 8px;border:1px solid var(--rule);backgroun
 </div>
 <div class="live" id="live"></div>
 <h2>Progress</h2><div class="grid" id="grid"></div>
+<h2>Resume in use</h2><div class="live" id="resume">loading</div>
 <h2>Questions needing input (grouped)</h2><div id="needs"></div>
 <h2>Latest applications</h2><table id="latest"></table>
 <h2>View applications</h2><select id="vs" onchange="view()"><option value="">choose status</option></select><table id="jobs" style="margin-top:8px"></table>
@@ -51,6 +52,9 @@ async function mark(id,status){await api('/api/mark',{id,status});view()}
 let loaded=false;
 async function save(){const g=k=>$('s_'+k);await api('/api/settings',{max_per_session:+g('max_per_session').value,priorities:g('priorities').value.split(',').map(Number),
  countries:g('countries').value.split(',').map(s=>s.trim()),poll_minutes:+g('poll_minutes').value,max_retries:+g('max_retries').value,headless:g('headless').value==='true'});alert('saved')}
+async function loadResume(){const r=await api('/api/resume');
+ $('resume').innerHTML=(r.resumes.map(x=>x.files.map(f=>f.missing?`<div><b>${E(f.role)}</b>: <span class="st FAILED">MISSING</span> ${E(f.path)}</div>`:`<div><b>${E(f.role)}</b>: ${E(f.path)} <span class="st">· edited ${E(f.modified)} · ${f.size_kb} KB · id ${f.sha}</span></div>`).join('')+(x.warning?`<div class="st UNCERTAIN" style="margin-top:4px">${E(x.warning)}</div>`:'')).join('<hr>'))
+ +`<div class="sub" style="margin:8px 0 0">Tailoring is ${r.tailoring?'on':'off'}: for each job a copy of the source docx is rebuilt from the file above, so your edits are picked up automatically. Latest uploads: `+(r.recent.length?r.recent.map(x=>E(x.company)+' ('+E(x.t)+')').join(', '):'none yet')+'</div>'}
 async function refresh(){const s=await api('/api/state'),c=s.counts;
  $('sub').textContent=`worker ${s.running?'running':'not running'} · control: ${s.control} · profile ${s.profile_ok?'verified':'NOT verified ('+s.profile_missing.join(', ')+')'}`;
  $('now').textContent=s.current?'Processing: '+s.current:'Idle';
@@ -58,12 +62,12 @@ async function refresh(){const s=await api('/api/state'),c=s.counts;
   (s.settings.live_submit?`<button class="warn" onclick="live(false)">Switch to dry run</button>`:`<button onclick="if(confirm('Enable live submissions? ${s.dryrun_ok} dry-run jobs will be queued.'))live(true)">Enable live submission</button>`)+` &nbsp; dry-run passed: ${s.dryrun_ok}`;
  const cells=[['Total found',s.total],['Eligible',s.eligible],['Applied',c.APPLIED],['Already applied',c.ALREADY_APPLIED],['Failed',c.FAILED],['Ready: click submit',c.READY_TO_SUBMIT],['Needs input',c.NEEDS_USER_INPUT],['Blocked',c.BLOCKED],['Uncertain',c.UNCERTAIN],['Remaining',s.remaining],['Apps / hour',s.per_hour]];
  $('grid').innerHTML=cells.map(([a,b])=>`<div class="stat"><b>${b}</b><span>${a}</span></div>`).join('');
- $('latest').innerHTML='<tr><th>Time<th>Company<th>Role<th>Status<th>Note</tr>'+s.latest.map(j=>`<tr><td>${E(j.t)}<td>${E(j.company)}<td>${E(j.title)}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}</tr>`).join('');
+ $('latest').innerHTML='<tr><th>Time<th>Company<th>Role<th>Status<th>Note<th>Resume</tr>'+s.latest.map(j=>`<tr><td>${E(j.t)}<td>${E(j.company)}<td>${E(j.title)}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}<td>${j.resume_used?`<a href="/resume-file?p=${encodeURIComponent(j.resume_used)}">${E(j.resume_used.split('/').slice(-2).join('/'))}</a>`:''}</tr>`).join('');
  const a=document.activeElement; if(!(a&&a.closest&&a.closest('#needs'))) window.NEEDS=s.needs;$('needs').innerHTML=s.needs.length?s.needs.map((n,i)=>{const opts=(n.options&&n.options!='[]')?JSON.parse(n.options):[];const pick=(n.kind!='draft'&&n.kind!='resume'&&(opts.length||n.kind=='checkbox'));return `<div class="need"><b>${E(n.question)}</b> <span class="st">(${n.n} job${n.n>1?'s':''}, ${E(n.kind)})</span><br>${n.kind=='resume'?'<a href="/resume-file?p='+encodeURIComponent(JSON.parse(n.options)[0])+'">Download tailored resume</a><br><small>'+E(JSON.parse(n.options)[1])+'. Type ok to approve.</small><br>':''}${n.kind=='draft'?'<small>Model draft. Edit or approve; it will not be reused for other companies.</small><br>':(n.options&&n.options!='[]'?'<small>'+E(JSON.parse(n.options).join(' | '))+'</small><br>':'')}${pick?(n.kind=='checkbox'?['Yes','No']:opts).map((o,j)=>`<button style="margin:4px 6px 0 0" onclick="pickOpt(${i},${j})">${E(o)}</button>`).join(''):''}<input id="a${i}" ${pick?'hidden':''} placeholder="your answer" value="${n.kind=='draft'?E(JSON.parse(n.options)[0]):''}" ${n.kind=='draft'?'style="width:90%"':''}> ${pick?'':`<button onclick='ans(${JSON.stringify(n.qkey)},${i})'>Save and resume</button>`}</div>`}).join(''):'<div class="sub">Nothing waiting.</div>';
  if(!loaded){loaded=true;$('vs').innerHTML+=Object.keys(c).map(k=>`<option>${k}</option>`).join('');
   const f=(k,l,v)=>`<div><label>${l}</label><input id="s_${k}" value="${E(v)}"></div>`;
   $('set').innerHTML=f('max_per_session','Max applications per session',s.settings.max_per_session)+f('priorities','Priority tiers (1,2,3)',s.settings.priorities)+f('countries','Countries',s.settings.countries)+
    f('poll_minutes','New-job check interval (min)',s.settings.poll_minutes)+f('max_retries','Retry limit',s.settings.max_retries)+`<div><label>Browser visible</label><select id="s_headless"><option value="false" ${s.settings.headless?'':'selected'}>Visible</option><option value="true" ${s.settings.headless?'selected':''}>Hidden</option></select></div>`;}
  $('ev').innerHTML=s.events.map(e=>`<tr><td>${E(e.t)}<td>${E(e.msg)}</tr>`).join('')}
-refresh();setInterval(refresh,4000);
+refresh();loadResume();setInterval(refresh,4000);setInterval(loadResume,30000);
 </script></body></html>
