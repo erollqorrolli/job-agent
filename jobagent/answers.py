@@ -85,13 +85,55 @@ def question_needs_the_user(question, company, profile) -> bool:
     return bool(PERSONAL_EXPERIENCE.search(question)) and company.lower() not in facts_sheet(profile).lower()
 
 
-def write_answer(cfg, question, company, role, job_text, limit=None, chat=None) -> str | None:
-    """Returns text or None (=> human queue). `chat` injectable for tests."""
+def _write(cfg, question, company, role, job_text, limit, chat, force):
+    """Returns (best_text | None, problems). problems == [] means the text is clean."""
     profile = load_profile()
     if not has_enough_facts(profile):
-        return None
+        return None, ["no facts in your profile"]
     compound = question_needs_the_user(question, company, profile)
-    if compound and len(question) <= 120:
+    if compound and len(question) <= 120 and not force:
+        return None, ["personal-history question"]      # a short "have you used X?" can only be answered by the user
+    asked = question
+    if compound:
+        question = question + "\n(Do not say whether the applicant has used, visited or worked with the company before: that is not in the facts. Answer only the rest of the question.)"
+    chat = chat or (lambda s, u: _chat(cfg, s, u))
+    user = (f"Company: {company}\nRole: {role}\nAbout the role (from the posting, may be partial):\n{job_text[:2500]}\n\n"
+            f"My real background (only use this):\n{facts_block(profile)}\n\nQuestion: {question}\n"
+            + (f"Hard limit: {limit} characters.\n" if limit else "") + "Write my answer.")
+    bad, best = [], (None, ["model returned nothing"])
+    for attempt in range(3):
+        try:
+            out = chat(STYLE, user if attempt == 0 else user + f"\nYour last try was rejected for: {', '.join(bad)}. Rewrite it plainer, in 2 or 3 short sentences, using only the facts.")
+        except Exception:
+            return None, ["Ollama did not respond"]
+        if out.strip() == "INSUFFICIENT_FACTS":
+            return None, ["not enough facts in your profile"]
+        out = clean_output(out)
+        # a word the question itself uses ("mission", "excites", "aligning") is fair to echo; match on the stem
+        qlow = asked.lower()
+        bad = [b for b in style_violations(out) if b[:5] not in qlow]
+        if not bad and not _supported(chat, out, profile):
+            bad = ["claims not in your profile"]
+        if limit and len(out) > limit and not bad:
+            bad = [f"over {limit} characters"]
+        if not bad:
+            return out.strip(), []
+        if best[0] is None or len(bad) < len(best[1]):
+            best = (out.strip(), bad)
+    return best
+
+
+def write_answer(cfg, question, company, role, job_text, limit=None, chat=None, force=False) -> str | None:
+    """Clean answer or None (=> human queue). `chat` injectable for tests."""
+    text, bad = _write(cfg, question, company, role, job_text, limit, chat, force)
+    return text if text and not bad else None
+
+
+def draft_answer(cfg, question, company, role, job_text="", limit=None, chat=None):
+    """For the user's 'Ask Ollama' button: best attempt even if imperfect, plus what to double-check."""
+    return _write(cfg, question, company, role, job_text, limit, chat, True)
+    compound = question_needs_the_user(question, company, profile)
+    if compound and len(question) <= 120 and not force:
         return None          # a short "have you used X?" can only be answered by the user
     if compound:
         question = question + "\n(Do not say whether the applicant has used, visited or worked with the company before: that is not in the facts. Answer only the rest of the question.)"

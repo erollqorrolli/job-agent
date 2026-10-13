@@ -169,3 +169,14 @@ def test_compound_question_gets_a_draft_for_the_user_not_an_auto_answer(db, prof
     q = "Have you used Khan Academy before? Tell us why you want to intern here and what you hope to learn from the team this summer."
     txt = answers.write_answer({}, q, "Khan Academy", "Intern", "Khan Academy builds free learning software.", chat=chat)
     assert txt and "Do not say whether the applicant has used" in seen[0]
+
+
+def test_ask_ollama_button_returns_best_draft_with_warnings(profile):
+    from jobagent import answers
+    flawed = iter(["I've been following Khan and I'm excited about it.", "OK", "I like backend work and want to learn more.", "OK"])
+    t, bad = answers.draft_answer({}, "Have you used Khan Academy before? What excites you here?", "Khan Academy", "Intern", chat=lambda s, u: next(flawed))
+    assert t and bad == []                                   # second attempt is clean, so no warnings
+    always_flawed = lambda s, u: "I'm thrilled and honored." if not s.startswith("You check") else "OK"
+    t, bad = answers.draft_answer({}, "Why this company?", "Acme", "Intern", chat=always_flawed)
+    assert t and bad                                         # user still gets the text, with the problems listed
+    assert answers.write_answer({}, "Why this company?", "Acme", "Intern", "", chat=always_flawed) is None   # unattended path stays strict

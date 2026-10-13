@@ -176,3 +176,31 @@ def resume_info():
         out.append(item)
     recent = db.q("SELECT company, resume_used, datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t FROM jobs WHERE resume_used IS NOT NULL AND resume_used != '' ORDER BY attempted_at DESC LIMIT 5")
     return jsonify(resumes=out, recent=recent, tailoring=effective_cfg(db).get("tailor_resume", True))
+
+
+@app.post("/api/ollama")
+def ask_ollama():
+    """On-demand: the user clicked 'Ask Ollama' on one question. Returns a draft (text) or a suggested option index."""
+    import json as _json
+    from . import answers
+    qkey = (request.json or {}).get("qkey")
+    rows = db.q("""SELECT h.question, h.kind, h.options, j.company, j.title FROM human_queue h JOIN jobs j ON j.id = h.job_id
+                   WHERE h.qkey = ? AND h.resolved_at IS NULL LIMIT 1""", (qkey,))
+    if not rows:
+        return jsonify(error="question not found")
+    r = rows[0]
+    if not answers.llm_configured():
+        return jsonify(error="Ollama isn't configured for the dashboard. Start it from a terminal that has LLM_BASE_URL set.")
+    cfg = effective_cfg(db)
+    answers.CFG_FOR_CHOICE[0] = cfg
+    profile = load_profile()
+    opts = _json.loads(r["options"] or "[]")
+    try:
+        if opts and r["kind"] not in ("draft", "resume"):
+            return jsonify(suggest=answers.pick_grounded(cfg, r["question"], opts, profile))
+        text, problems = answers.draft_answer(cfg, r["question"], r["company"], r["title"])
+        if not text:
+            return jsonify(error="Ollama couldn't write an answer from your profile (" + "; ".join(problems) + "). Write it yourself.")
+        return jsonify(draft=text, warnings=problems)
+    except Exception as e:
+        return jsonify(error=f"Ollama isn't responding ({type(e).__name__}). Is it running?")
