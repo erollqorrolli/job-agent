@@ -79,7 +79,7 @@ def test_silent_submit_is_uncertain_not_applied(page, db, site, profile):
 
 
 def test_bad_voice_answer_rejected(page, db, site, profile):
-    out = run(page, db, site, "simple.html", live=True, chat=BAD)
+    out = run(page, db, site, "simple.html", live=True, chat=BAD, answer_filters=True)
     assert out.status == "NEEDS_USER_INPUT"
 
 

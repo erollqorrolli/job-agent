@@ -2,6 +2,9 @@ from types import SimpleNamespace as N
 from jobagent import fields
 
 
+STRICT = {"answer_filters": True}
+
+
 def ctx(db, profile):
     return N(profile=profile, db=db, resume_path=None, answer_fn=lambda *a: None, job_id="j")
 
@@ -144,7 +147,7 @@ def test_personal_history_questions_are_not_answered_by_the_model(profile):
 def test_banned_words_echoed_from_the_question_are_allowed(profile, monkeypatch):
     from jobagent import answers
     outs = iter(["Education software matters to me and my backend work could help the mission.", "OK"])
-    r = answers.write_answer({}, "How does our mission align with your goals?", "Acme", "Intern", "Acme builds learning tools.", chat=lambda s, u: next(outs))
+    r = answers.write_answer(STRICT, "How does our mission align with your goals?", "Acme", "Intern", "Acme builds learning tools.", chat=lambda s, u: next(outs))
     assert r and "mission" in r
 
 
@@ -167,16 +170,23 @@ def test_compound_question_gets_a_draft_for_the_user_not_an_auto_answer(db, prof
     def chat(s_, u):
         seen.append(u); return next(outs)
     q = "Have you used Khan Academy before? Tell us why you want to intern here and what you hope to learn from the team this summer."
-    txt = answers.write_answer({}, q, "Khan Academy", "Intern", "Khan Academy builds free learning software.", chat=chat)
+    txt = answers.write_answer(STRICT, q, "Khan Academy", "Intern", "Khan Academy builds free learning software.", chat=chat)
     assert txt and "Do not say whether the applicant has used" in seen[0]
 
 
 def test_ask_ollama_button_returns_best_draft_with_warnings(profile):
     from jobagent import answers
     flawed = iter(["I've been following Khan and I'm excited about it.", "OK", "I like backend work and want to learn more.", "OK"])
-    t, bad = answers.draft_answer({}, "Have you used Khan Academy before? What excites you here?", "Khan Academy", "Intern", chat=lambda s, u: next(flawed))
+    t, bad = answers.draft_answer(STRICT, "Have you used Khan Academy before? What excites you here?", "Khan Academy", "Intern", chat=lambda s, u: next(flawed))
     assert t and bad == []                                   # second attempt is clean, so no warnings
     always_flawed = lambda s, u: "I'm thrilled and honored." if not s.startswith("You check") else "OK"
-    t, bad = answers.draft_answer({}, "Why this company?", "Acme", "Intern", chat=always_flawed)
+    t, bad = answers.draft_answer(STRICT, "Why this company?", "Acme", "Intern", chat=always_flawed)
     assert t and bad                                         # user still gets the text, with the problems listed
-    assert answers.write_answer({}, "Why this company?", "Acme", "Intern", "", chat=always_flawed) is None   # unattended path stays strict
+    assert answers.write_answer(STRICT, "Why this company?", "Acme", "Intern", "", chat=always_flawed) is None   # unattended path stays strict
+
+
+def test_filters_off_by_default_returns_the_models_text(profile):
+    from jobagent import answers
+    flawed = lambda s, u: "I am thrilled and honored to apply."
+    assert answers.write_answer({}, "Why this company?", "Acme", "Intern", "", chat=flawed) == "I am thrilled and honored to apply."
+    assert answers.write_answer({"answer_filters": True}, "Why this company?", "Acme", "Intern", "", chat=flawed) is None

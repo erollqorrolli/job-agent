@@ -100,6 +100,15 @@ def _write(cfg, question, company, role, job_text, limit, chat, force):
     user = (f"Company: {company}\nRole: {role}\nAbout the role (from the posting, may be partial):\n{job_text[:2500]}\n\n"
             f"My real background (only use this):\n{facts_block(profile)}\n\nQuestion: {question}\n"
             + (f"Hard limit: {limit} characters.\n" if limit else "") + "Write my answer.")
+    strict = bool((cfg or {}).get("answer_filters", False))
+    if not strict:     # filters off: one call, take what the model says; problems are only reported, never blocking
+        try:
+            out = clean_output(chat(STYLE, user))
+        except Exception:
+            return None, ["Ollama did not respond"]
+        if not out or out.strip() == "INSUFFICIENT_FACTS":
+            return None, ["not enough facts in your profile"]
+        return out.strip(), []
     bad, best = [], (None, ["model returned nothing"])
     for attempt in range(3):
         try:
