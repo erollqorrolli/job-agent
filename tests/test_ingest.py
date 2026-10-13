@@ -47,3 +47,14 @@ def test_priority_and_platform():
     assert priority_of("Product Manager Intern", "Product") == 3
     assert platform_of("https://acme.wd5.myworkdayjobs.com/x") == "workday"
     assert normalize_url("https://A.com/x/?utm_source=1&id=2") == "a.com/x?id=2"
+
+
+def test_ready_jobs_are_never_refilled_after_restart(db, profile):
+    from jobagent.worker import recover_on_start
+    cfg = {"term": "Summer 2027", "countries": ["US"]}
+    ingest(db, cfg, [item(1), item(2)])
+    db.update("id1", status="READY_TO_SUBMIT"); db.update("id2", status="IN_PROGRESS")
+    recover_on_start(db)
+    st = {r["id"]: r["status"] for r in db.q("SELECT id,status FROM jobs")}
+    assert st["id1"] == "UNCERTAIN"          # may already have been submitted by hand: never auto-requeued
+    assert st["id2"] == "NOT_STARTED"        # a crash mid-fill is safe to retry

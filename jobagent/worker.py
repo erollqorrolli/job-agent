@@ -11,6 +11,14 @@ from .profile import load_profile, verified, missing_required
 SPEED = {"greenhouse": 0, "lever": 0, "ashby": 0, "smartrecruiters": 1, "workable": 1, "generic": 2}
 
 
+def recover_on_start(db):
+    """Crash/restart recovery. A job that was waiting for the user's click is NEVER refilled automatically: the user may have
+    submitted it by hand, and a second application would be a duplicate."""
+    db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='IN_PROGRESS'")
+    db.x("""UPDATE jobs SET status='UNCERTAIN', status_reason='form was ready for your click but the tab was lost. Mark it applied if you submitted it'
+            WHERE status='READY_TO_SUBMIT'""")
+
+
 def effective_cfg(db):
     cfg = load_config()
     cfg.update(db.kv_get("settings", {}) or {})
@@ -44,12 +52,11 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
     stop = {"flag": False}
     signal.signal(signal.SIGINT, lambda *a: stop.update(flag=True))
     signal.signal(signal.SIGTERM, lambda *a: stop.update(flag=True))
-    db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='IN_PROGRESS'")  # crash/restart recovery
+    recover_on_start(db)
     db.kv_set("control", "run")
     db.kv_set("current", None)
     done, tried, host_last = 0, set(), {}
     ready = {}    # job id -> (page, job) waiting for the user's Submit click
-    db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='READY_TO_SUBMIT'")   # tabs from a previous run are gone
     pw = sync_playwright().start()
     ctx = None
     try:

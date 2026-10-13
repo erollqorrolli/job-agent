@@ -45,7 +45,8 @@ async function exp(){const r=await api('/api/action/export',{});alert('Saved: '+
 async function live(on){const r=await api('/api/action/live',{on});if(r.error)alert(r.error+': '+(r.missing||[]).join(', '));refresh()}
 async function ans(k,i){const v=$('a'+i).value.trim();if(!v)return;await api('/api/answer',{qkey:k,answer:v});refresh()}
 async function view(){const s=$('vs').value;const r=await api('/api/jobs'+(s?'?status='+s:''));
- $('jobs').innerHTML='<tr><th>Company<th>Role<th>Platform<th>P<th>Status<th>Note</tr>'+r.map(j=>`<tr><td>${E(j.company)}<td><a href="${E(j.url)}" target="_blank">${E(j.title)}</a><td>${E(j.platform)}<td>${j.priority}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}</tr>`).join('')}
+ $('jobs').innerHTML='<tr><th>Company<th>Role<th>Platform<th>P<th>Status<th>Note<th></tr>'+r.map(j=>`<tr><td>${E(j.company)}<td><a href="${E(j.url)}" target="_blank">${E(j.title)}</a><td>${E(j.platform)}<td>${j.priority}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}<td>${['APPLIED','ALREADY_APPLIED','INELIGIBLE','CLOSED'].includes(j.status)?'':`<button onclick="mark('${j.id}','ALREADY_APPLIED')">I applied</button>`}</tr>`).join('')}
+async function mark(id,status){await api('/api/mark',{id,status});view()}
 let loaded=false;
 async function save(){const g=k=>$('s_'+k);await api('/api/settings',{max_per_session:+g('max_per_session').value,priorities:g('priorities').value.split(',').map(Number),
  countries:g('countries').value.split(',').map(s=>s.trim()),poll_minutes:+g('poll_minutes').value,max_retries:+g('max_retries').value,headless:g('headless').value==='true'});alert('saved')}

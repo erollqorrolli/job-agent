@@ -49,7 +49,7 @@ def state():
 @app.get("/api/jobs")
 def jobs():
     st = request.args.get("status")
-    rows = db.q("SELECT company,title,location,platform,priority,status,status_reason,url FROM jobs"
+    rows = db.q("SELECT id,company,title,location,platform,priority,status,status_reason,url FROM jobs"
                 + (" WHERE status=?" if st else "") + " ORDER BY priority, company LIMIT 500", (st,) if st else ())
     return jsonify(rows)
 
@@ -134,3 +134,13 @@ def resume_file():
     if not str(pth).startswith(str((ROOT / "data" / "resumes").resolve())) or not pth.exists():
         abort(404)
     return send_file(pth, as_attachment=True)
+
+
+@app.post("/api/mark")
+def mark():
+    d = request.json or {}
+    if d.get("status") not in ("APPLIED", "ALREADY_APPLIED", "INELIGIBLE", "NOT_STARTED"):
+        return jsonify(error="bad status"), 400
+    db.x("UPDATE jobs SET status=?, status_reason='set by you', next_try_at=? WHERE id=?",
+         (d["status"], 0 if d["status"] == "NOT_STARTED" else 9999999999, d["id"]))
+    return jsonify(ok=True)
