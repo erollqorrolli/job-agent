@@ -71,3 +71,17 @@ def test_skip_question_skips_every_job_waiting_on_it_and_clears_their_questions(
     assert st["id1"] == st["id2"] == "SKIPPED" and st["id3"] == "NOT_STARTED"
     assert not db.q("SELECT 1 FROM human_queue WHERE resolved_at IS NULL")           # id1's other question went with it
     assert not db.q("SELECT 1 FROM jobs WHERE id IN ('id1','id2') AND next_try_at < 9999999999")   # never picked up again
+
+
+def test_one_application_per_company(db, profile):
+    from jobagent.worker import next_job
+    cfg = {"term": "Summer 2027", "countries": ["US"]}
+    ingest(db, cfg, [item(1, title="Backend Intern", url="https://x.com/1"), item(2, title="ML Intern", url="https://x.com/2"),
+                     {**item(3, title="Web Intern", url="https://x.com/3"), "company_name": "Other Co"}])
+    assert next_job(db, {}, set())["company"] in ("Acme", "Other Co")
+    db.update("id1", status="READY_TO_SUBMIT")                 # one Acme role is waiting for the user
+    nxt = next_job(db, {}, set())
+    assert nxt["company"] == "Other Co"                        # the second Acme role is skipped
+    db.update("id3", status="APPLIED")
+    assert next_job(db, {}, set()) is None
+    assert next_job(db, {"one_per_company": False}, set())["id"] == "id2"   # opt-out restores the old behavior

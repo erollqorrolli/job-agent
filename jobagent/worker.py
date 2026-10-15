@@ -32,6 +32,11 @@ def notify(msg):
 
 def next_job(db, cfg, skip, platform=None):
     rows = db.q("SELECT * FROM jobs WHERE status='NOT_STARTED' AND next_try_at<=? ", (time.time(),))
+    if cfg.get("one_per_company", True):
+        # one application per company: skip other roles at a company where something is applied / waiting / parked / in progress
+        touched = {r["company"].lower() for r in db.q("""SELECT DISTINCT company FROM jobs WHERE status IN
+            ('APPLIED','ALREADY_APPLIED','READY_TO_SUBMIT','UNCERTAIN','BLOCKED','NEEDS_USER_INPUT','IN_PROGRESS')""")}
+        rows = [r for r in rows if r["company"].lower() not in touched]
     rows = [r for r in rows if r["priority"] in cfg.get("priorities", [1, 2, 3]) and r["id"] not in skip and (not platform or r["platform"] == platform)]
     rows.sort(key=lambda r: (r["priority"], SPEED.get(r["platform"], 1), -(r["date_posted"] or 0)))
     return rows[0] if rows else None

@@ -15,3 +15,4 @@ llm:                        # any OpenAI-compatible endpoint. Set LLM_API_KEY in
   base_url: https://generativelanguage.googleapis.com/v1beta/openai
   model: gemini-2.0-flash
 answer_filters: false      # true = reject model answers that use banned phrases / unsupported claims and retry (stricter, answers less often)
+one_per_company: true      # never apply to a second role at a company once one is applied / waiting / parked (set false to allow several)
