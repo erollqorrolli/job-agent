@@ -173,3 +173,29 @@ def test_handoff_leaves_tab_open_and_detects_the_users_click(page, db, site, pro
 def test_email_verification_code_is_handed_to_the_user(page, db, site, profile):
     out = run(page, db, site, "needs_code.html", live=True)
     assert out.status == "READY_TO_SUBMIT" and out.keep_page and "verification code" in out.reason
+
+
+def test_answering_a_question_resumes_on_the_same_open_tab(page, db, site, profile):
+    job = make_job(db, f"{site}/unknown_q.html")
+    cfg = {"live_submit": False}
+    out = process(page, db, cfg, job, answer_chat=GOOD)
+    assert out.status == "NEEDS_USER_INPUT" and out.keep_page          # tab stays open while waiting for the user
+    page.evaluate("window.__marker = 42")
+    for r in db.q("SELECT qkey FROM human_queue WHERE resolved_at IS NULL"):
+        db.resolve_need(r["qkey"], "No" if "criminal" in r["qkey"] else "Python")
+    out = process(page, db, cfg, db.q("SELECT * FROM jobs")[0], answer_chat=GOOD, reuse_page=True)
+    assert out.reason == "DRYRUN_OK", out
+    assert page.evaluate("window.__marker") == 42                      # same page object: no reload, nothing refilled from scratch
+
+
+def test_generated_answers_are_cached_per_job(page, db, site, profile):
+    calls = []
+    def counting(s, u):
+        if not s.startswith("You check"):
+            calls.append(1)
+        return GOOD(s, u)
+    job = make_job(db, f"{site}/simple.html")
+    process(page, db, {"live_submit": False}, job, answer_chat=counting)
+    n = len(calls)
+    process(page, db, {"live_submit": False}, db.q("SELECT * FROM jobs")[0], answer_chat=counting)
+    assert n >= 1 and len(calls) == n                                  # second pass reused the saved text, no new model call

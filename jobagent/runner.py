@@ -1,5 +1,6 @@
 """Process one job: open, fill (multi-step), verify, submit (only if allowed), confirm."""
 import json, re, time
+from pathlib import Path
 from dataclasses import dataclass, field
 from . import detect, fields
 from .adapters import adapter_for
@@ -49,11 +50,19 @@ def maybe_tailor(db, cfg, profile, job, job_text, default_path):
         return default_path, None
     ident = profile.get("identity", {})
     out = DATA / "resumes" / job["id"][:8] / f"{ident.get('first_name','')}_{ident.get('last_name','')}_Resume.docx"
-    try:
-        out, info = tailor_fit(docx, job_text, bank, out)
-    except Exception as e:
-        db.log(job["id"], f"tailor failed, using default resume: {e}")
-        return default_path, None
+    import hashlib, json as _json
+    stamp = _json.dumps({"docx": Path(docx).stat().st_mtime, "bank": hashlib.sha1(_json.dumps(bank, sort_keys=True).encode()).hexdigest()[:10]})
+    meta = out.with_suffix(".meta")
+    cached_pdf = out.with_suffix(".pdf")
+    if meta.exists() and meta.read_text() == stamp and (cached_pdf.exists() or out.exists()):
+        out, info = (cached_pdf if cached_pdf.exists() else out), {"added_used": [], "added_course": [], "reordered": False, "cached": True}   # same resume + skills as last pass: reuse
+    else:
+        try:
+            out, info = tailor_fit(docx, job_text, bank, out)
+            meta.write_text(stamp)
+        except Exception as e:
+            db.log(job["id"], f"tailor failed, using default resume: {e}")
+            return default_path, None
     key = f"resume@{job['id']}"
     approved = db.q("SELECT COUNT(*) n FROM answers WHERE qkey LIKE 'resume@%'")[0]["n"]
     limit = cfg.get("tailor_review_first", 5)
@@ -134,16 +143,18 @@ def reach_form(page, adapter):
     settle(page)
 
 
-def process(page, db, cfg, job, answer_chat=None) -> Outcome:
+def process(page, db, cfg, job, answer_chat=None, reuse_page=False) -> Outcome:
+    """reuse_page=True: the tab is still open from an earlier pass (parked for a question). Continue on it instead of starting over."""
     profile = load_profile()
     live = bool(cfg.get("live_submit")) and verified(profile)
     adapter = adapter_for(job["platform"])
-    early = open_job(page, job, adapter)
-    if early:
-        early.evidence = early.evidence or shot(page, job, "early")
-        return early
-    reach_form(page, adapter)
-    if detect.login_wall(page):
+    if not reuse_page:
+        early = open_job(page, job, adapter)
+        if early:
+            early.evidence = early.evidence or shot(page, job, "early")
+            return early
+        reach_form(page, adapter)
+    if not reuse_page and detect.login_wall(page):
         db.add_need(job["id"], norm_key(f"account:{adapter.name}:{job['url_key'].split('/')[0]}"),
                     f"{job['company']} needs sign-in / account on {adapter.name}. Sign in once via `python -m jobagent login`, then retry.", "account", [])
         return Outcome("NEEDS_USER_INPUT", "account/sign-in required", evidence=shot(page, job, "login"))
@@ -156,8 +167,17 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
     if review:
         review.evidence = shot(page, job, "review")
         return review
-    ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat) \
-        if (answer_chat or llm_configured()) else None
+    def ans_fn(q, limit=None):
+        if not (answer_chat or llm_configured()):
+            return None
+        jk = f"{norm_key(q)}@gen@{job['id']}"
+        cached = db.get_answer(jk)
+        if cached:
+            return cached
+        text = write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat)
+        if text:
+            db.save_answer(jk, q, text, "llm-job")
+        return text
     ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"])
     ctx.company = job["company"]
     CFG_FOR_CHOICE[0] = cfg
@@ -199,7 +219,7 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                     db.add_need(job["id"], norm_key(q) + "@" + job["id"], q, "draft", [need[2]])
                 else:
                     db.add_need(job["id"], norm_key(q), q, kind, f.get("options"))
-            return Outcome("NEEDS_USER_INPUT", f"{len(needs)} unanswered", evidence=shot(page, job, "needs"), questions=asked)
+            return Outcome("NEEDS_USER_INPUT", f"{len(needs)} unanswered", evidence=shot(page, job, "needs"), questions=asked, keep_page=True)
 
         sub = adapter.find_submit(page)
         nxt = adapter.find_next(page) if not sub else None

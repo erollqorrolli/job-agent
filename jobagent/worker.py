@@ -57,6 +57,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
     db.kv_set("current", None)
     done, tried, host_last = 0, set(), {}
     ready = {}    # job id -> (page, job) waiting for the user's Submit click
+    parked = {}   # job id -> (page, job) tab kept open while the job waits for the user's answer; resumed in place afterwards
     pw = sync_playwright().start()
     ctx = None
     try:
@@ -81,7 +82,18 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                 time.sleep(5); continue
             # jobs the user just answered are eligible again within this session
             tried &= {r["id"] for r in db.q("SELECT id FROM jobs WHERE status IN ('APPLIED','UNCERTAIN','ALREADY_APPLIED','INELIGIBLE','CLOSED','FAILED','BLOCKED','READY_TO_SUBMIT')")}
-            job = next_job(db, cfg, tried, platform)
+            job, reuse = None, None
+            for jid, (pg, jb) in list(parked.items()):      # the user answered: continue on the SAME tab, no reload, no refill from scratch
+                row = db.q("SELECT * FROM jobs WHERE id=?", (jid,))
+                if pg.is_closed() or not row or row[0]["status"] not in ("NOT_STARTED", "NEEDS_USER_INPUT"):
+                    try: pg.close()
+                    except Exception: pass
+                    parked.pop(jid); continue
+                if row[0]["status"] == "NOT_STARTED" and row[0]["next_try_at"] <= time.time():
+                    job, reuse = row[0], pg
+                    parked.pop(jid); break
+            if job is None:
+                job = next_job(db, cfg, tried, platform)
             if not job:
                 if once_limit:
                     break
@@ -99,9 +111,9 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             db.kv_set("current", f"{job['company']} - {job['title']}")
             page = None
             try:
-                page = ctx.new_page()
+                page = reuse or ctx.new_page()
                 page.set_default_timeout(15000)
-                out = process(page, db, cfg, job, answer_chat)
+                out = process(page, db, cfg, job, answer_chat, reuse_page=bool(reuse))
             except Exception as e:
                 msg = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
                 out = Outcome("FAILED", msg)
@@ -118,7 +130,14 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             host_last[host] = time.time()
             apply_outcome(db, cfg, job, out)
             if getattr(out, "keep_page", False):
-                ready[job["id"]] = (page, job)
+                if out.status == "NEEDS_USER_INPUT":
+                    parked[job["id"]] = (page, job)
+                    while len(parked) > cfg.get("max_parked_tabs", 6):      # too many open: close the oldest (it will restart from scratch later)
+                        old_id = next(iter(parked)); old_pg, _ = parked.pop(old_id)
+                        try: old_pg.close()
+                        except Exception: pass
+                else:
+                    ready[job["id"]] = (page, job)
             tried.add(job["id"])
             # the session cap counts real submissions in live mode; jobs parked for your input don't use it up
             if not cfg.get("live_submit") or out.submitted:
@@ -127,7 +146,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             if out.status == "NEEDS_USER_INPUT":
                 notify(f"Input needed: {job['company']}")
             lo, hi = cfg.get("delay_seconds", [20, 45])
-            if not once_limit:
+            if not once_limit and out.status not in ("NEEDS_USER_INPUT", "INELIGIBLE", "CLOSED", "ALREADY_APPLIED") and not (out.status == "NOT_STARTED"):
                 time.sleep(random.uniform(lo, hi))
     finally:
         db.kv_set("current", None)
