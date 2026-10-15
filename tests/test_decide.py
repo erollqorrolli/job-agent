@@ -190,3 +190,16 @@ def test_filters_off_by_default_returns_the_models_text(profile):
     flawed = lambda s, u: "I am thrilled and honored to apply."
     assert answers.write_answer({}, "Why this company?", "Acme", "Intern", "", chat=flawed) == "I am thrilled and honored to apply."
     assert answers.write_answer({"answer_filters": True}, "Why this company?", "Acme", "Intern", "", chat=flawed) is None
+
+
+def test_eeo_uses_saved_answers_else_declines(db, profile):
+    gopts = ("Male", "Female", "Non-binary", "Decline to self-identify")
+    assert d(db, profile, "Gender", "combobox", gopts, required=False).value == 3           # nothing saved: decline
+    profile["demographics"].update(gender="Male", race="Asian", hispanic_latino=False, veteran_status=False, disability_status=False)
+    assert d(db, profile, "What is your gender/gender identity?", "combobox", gopts, required=False).value == 0
+    ropts = ("Hispanic or Latino", "White", "Asian (Not Hispanic or Latino)", "Decline to self-identify")
+    assert d(db, profile, "Race / Ethnicity", "radio", ropts).value == 2
+    assert d(db, profile, "Are you Hispanic or Latinx?", "combobox", ("Yes", "No", "Decline")).value == 1
+    vopts = ("I identify as one or more of the classifications of protected veteran", "I am not a protected veteran", "I decline to self-identify")
+    assert d(db, profile, "Veteran Status", "combobox", vopts).value == 1
+    assert d(db, profile, "Disability Status", "combobox", ("Yes, I have a disability", "No, I do not have a disability", "I do not want to answer")).value == 1

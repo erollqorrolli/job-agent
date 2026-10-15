@@ -227,6 +227,40 @@ def variants_for(label: str, value: str, p) -> list:
     return out
 
 
+EEO_KEYS = [  # (label regex, profile key under demographics.)  order matters: "hispanic" before "race"
+    (r"sexual orientation", "sexual_orientation"), (r"transgender|gender identity.*trans", "transgender"),
+    (r"hispanic|latino|latinx", "hispanic_latino"), (r"veteran", "veteran_status"), (r"disabilit", "disability_status"),
+    (r"\brace\b|racial|ethnic", "race"), (r"gender|\bsex\b", "gender"),
+]
+SYN = {"male": ["male", "man"], "female": ["female", "woman"], "asian": ["asian", "south asian", "east asian"], "white": ["white", "caucasian"],
+       "black": ["black", "african american"], "two or more": ["two or more", "multiracial", "mixed"], "straight": ["straight", "heterosexual"]}
+
+
+def eeo_choice(label, p, opts):
+    """Voluntary self-identification: use the user's own saved answer, else decline. Never inferred."""
+    dem = get(p, "demographics") or {}
+    for pat, key in EEO_KEYS:
+        if re.search(pat, label, re.I):
+            v = dem.get(key)
+            if v in (None, "", "decline"):
+                break
+            if isinstance(v, bool) or str(v).lower() in ("yes", "no"):
+                want = v if isinstance(v, bool) else str(v).lower() == "yes"
+                if key == "veteran_status":      # "I am not a protected veteran" / "I identify as one or more..."
+                    i = next((k for k, o in enumerate(opts) if (re.search(r"not a (protected )?veteran|i am not", o, re.I) is not None) == (not want) and not DECLINE.search(o)), None)
+                else:
+                    i = pick_option(opts, want)
+                if i is not None:
+                    return i
+                break
+            for alt in SYN.get(str(v).lower(), [str(v)]) + [str(v)]:
+                i = pick_option(opts, alt)
+                if i is not None:
+                    return i
+            return None     # they gave an answer but this form has no matching option: ask rather than decline silently
+    return next((i for i, o in enumerate(opts) if DECLINE.search(o)), None)
+
+
 def pick_range(options, x: float):
     """Choose the option whose numeric range contains x ("3.0 - 3.49", "3.5+", "Below 3.0")."""
     for i, o in enumerate(options):
@@ -294,9 +328,8 @@ def decide(f: dict, ctx) -> Decision:
             return Decision(value=i, source="profile") if i is not None else Decision(need=(label, kind))
         return Decision(value=str(g), source="profile")
     if EEO.search(label) and not re.search(r"auth|sponsor", label, re.I):
-        pref = get(p, "demographics.default") or "decline"
-        if kind in ("select", "radio", "combobox", "btngroup") and pref == "decline":
-            i = next((i for i, o in enumerate(opts) if DECLINE.search(o)), None)
+        if kind in ("select", "radio", "combobox", "btngroup") and opts:
+            i = eeo_choice(label, p, opts)
             if i is not None:
                 return Decision(value=i, source="eeo")
         return Decision(skip=not f.get("required"), need=(label, kind) if f.get("required") else None)

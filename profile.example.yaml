@@ -39,8 +39,15 @@ preferences:
   accept_standard_terms: null   # true = tick routine privacy/terms boxes automatically
   how_did_you_hear: Other       # shown when a form asks
   previously_worked_for_companies: []   # company names; anything else answers "No"
-demographics:                   # voluntary EEO. Default is to decline everything.
+demographics:                   # voluntary EEO. Anything left null/decline -> the form's "decline to self-identify" option
   default: decline
+  gender: null            # e.g. Male / Female / Non-binary
+  race: null              # e.g. Asian / White / Black or African American / Two or more races
+  hispanic_latino: null   # true / false
+  veteran_status: null    # true = protected veteran, false = not
+  disability_status: null # true / false
+  sexual_orientation: null
+  transgender: null
 resumes:                        # first is default; tags pick by role category
   - {path: null, tags: [default]}
 # Facts the answer writer is allowed to use. Real things only.
