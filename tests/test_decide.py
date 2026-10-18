@@ -25,6 +25,33 @@ def test_confirmed_yes_no_facts(db, profile):
     assert d(db, profile, "Current employer", "text").value == "GRASP Lab"
 
 
+def test_referrals_and_prior_employment_default_to_no(db, profile):
+    assert d(db, profile, "Were you referred by a current employee?", "radio").value == 1
+    assert d(db, profile, "Do you have an internal referral?", "select").value == 1
+    assert d(db, profile, "Have you worked here before?", "btngroup").value == 1
+    assert d(db, profile, "Have you ever been employed with Acme?", "radio").value == 1
+    referral_name = d(db, profile, "Employee referral name", "text", (), required=False)
+    assert referral_name.skip and referral_name.value is None
+
+
+def test_salary_expectation_uses_posted_midpoint_and_never_guesses(db, profile):
+    c = ctx(db, profile)
+    c.job_text = "The compensation range for this internship is $24.00 - $36.00 per hour."
+    hourly = fields.decide({"kind": "text", "label": "Desired hourly rate", "options": [],
+                            "required": True, "inputType": "number", "id": "x"}, c)
+    assert hourly.value == "30" and hourly.source == "job-posting-pay"
+
+    c.job_text = "The annual salary range is $80,000 to $100,000."
+    annual = fields.decide({"kind": "text", "label": "Salary expectation", "options": [],
+                            "required": True, "inputType": "text", "id": "x"}, c)
+    assert annual.value == "$90,000 per year"
+
+    c.job_text = "Competitive compensation is offered."
+    unknown = fields.decide({"kind": "text", "label": "Salary expectation", "options": [],
+                             "required": True, "inputType": "text", "id": "x"}, c)
+    assert unknown.need
+
+
 def test_us_person_and_criminal_still_ask(db, profile):
     assert d(db, profile, "Are you a U.S. Person, defined as a U.S. Citizen, a lawful permanent resident?").need
     assert d(db, profile, "Have you ever been convicted of a felony?").need
@@ -60,6 +87,24 @@ def test_pronouns_and_us_person(db, profile):
     r = d(db, profile, "Are you a U.S. citizen?", "select", ("Yes", "No"), required=False)
     assert r.value == 1 and not r.ineligible
     assert d(db, profile, "Are you legally authorized to work in the United States?").value == 0
+
+
+def test_saved_demographics_or_decline_are_used(db, profile):
+    profile["demographics"] = {"default": "self_identify", "gender": "Man", "race": "White"}
+    assert d(db, profile, "Gender", opts=("Woman", "Man", "Prefer not to say")).value == 1
+    assert d(db, profile, "Race", opts=("Asian", "White", "Decline to self-identify")).value == 1
+    profile["demographics"]["default"] = "decline"
+    assert d(db, profile, "Race", opts=("Asian", "White", "Decline to self-identify")).value == 2
+
+
+def test_hispanic_latino_profile_answers_equivalent_yes_no_eeo_question(db, profile):
+    profile["demographics"] = {"default": "self_identify", "ethnicity": "Hispanic/Latino"}
+    assert d(db, profile, "Are you Hispanic or Latino?", "select", ("Yes", "No"), required=False).value == 0
+    assert d(db, profile, "Do you identify as Hispanic or Latinx?", "btngroup", ("No", "Yes")).value == 1
+    checkbox = fields.decide({"kind": "checkbox", "label": "Hispanic or Latino", "ids": ["x"],
+                              "options": ["Hispanic or Latino"], "required": False, "id": "x"},
+                             ctx(db, profile))
+    assert checkbox.value is True and checkbox.source == "profile-eeo"
 
 
 def test_saved_no_does_not_bypass_us_person_ineligibility(db, profile):
@@ -100,6 +145,25 @@ def test_facts_sheet_has_no_contact_details(profile):
     assert "2155550100" not in sheet and "test@example.com" not in sheet and "resume.pdf" not in sheet
 
 
+def test_generic_grounded_reasoner_can_use_semantic_preflight_equivalents(db, profile):
+    from jobagent.answers import pick_grounded
+
+    profile["demographics"] = {"default": "self_identify", "ethnicity": "Hispanic/Latino"}
+    question = "Do you consider yourself part of the Latin American community?"
+    options = ("Yes", "No", "Prefer not to answer")
+
+    def reasoner(_system, user):
+        assert "demographics ethnicity: Hispanic/Latino" in user
+        return '{"answer":"Yes","evidence":"demographics ethnicity: Hispanic/Latino"}'
+
+    c = ctx(db, profile)
+    c.choice_fn = lambda q, opts: pick_grounded({}, q, opts, profile, chat=reasoner)
+    result = fields.decide({"kind": "select", "label": question, "options": list(options),
+                            "required": False, "id": "x"}, c)
+
+    assert result.value == 0 and result.source == "llm-grounded"
+
+
 def test_counts_and_free_text_never_auto_used(db, profile):
     import json
     from jobagent.answers import pick_grounded
@@ -112,3 +176,104 @@ def test_counts_and_free_text_never_auto_used(db, profile):
     c.choice_fn = lambda q, o: pick_grounded({}, q, o, profile, chat=txt)
     r = fields.decide({"kind": "text", "label": "Favorite language?", "required": True, "id": "x"}, c)
     assert r.need and r.need[1] == "draft"
+
+
+def test_optional_essay_is_still_sent_for_a_reviewable_draft(db, profile):
+    profile["preferences"]["trust_llm_answers"] = False
+    c = ctx(db, profile)
+    c.answer_fn = lambda *args: "I built a scheduling tool and learned how to turn feedback into simpler workflows."
+    r = fields.decide({"kind": "textarea", "label": "Anything else you would like us to know?",
+                       "required": False, "id": "x"}, c)
+    assert r.need[1] == "draft" and "scheduling tool" in r.need[2]
+
+
+def test_graduation_answers_are_derived_from_preflight_date(db, profile):
+    profile["education"]["graduation_date"] = "2028-05"
+    assert d(db, profile, "When do you graduate?", "text", ()).value == "Spring 2028"
+    assert d(db, profile, "Expected graduation term", "select",
+             ("Fall 2027", "Spring 2028", "Fall 2028")).value == 1
+    assert d(db, profile, "Graduation semester", "select",
+             ("Fall 27", "Spring 28", "Fall 28")).value == 1
+    assert d(db, profile, "Graduation year", "text", ()).value == "2028"
+
+
+def test_model_facts_include_safe_graduation_derivations(profile):
+    from jobagent.answers import facts_sheet
+    profile["education"]["graduation_date"] = "2028-05"
+    sheet = facts_sheet(profile)
+    assert "graduation term: Spring 2028" in sheet
+    assert "graduation month: May" in sheet
+    assert "graduation year: 2028" in sheet
+
+
+def test_local_model_reuses_high_confidence_question_variant(db, profile):
+    import json
+    from jobagent.answers import semantic_question_match
+
+    old = "Are you willing to work from the office three days per week?"
+    new = "Would you be willing to work in the office three days a week?"
+    db.save_answer(fields.norm_key(old), old, "Yes")
+    chat = lambda *_: json.dumps({"candidate_id": 0, "equivalent": True,
+                                  "confidence": "high", "reason": "same onsite schedule question"})
+    match = semantic_question_match({}, db, new, "select", ["Yes", "No"], chat=chat)
+    assert match["answer"] == "Yes" and match["qkey"] == fields.norm_key(old)
+
+    c = ctx(db, profile)
+    c.question_keys = {}
+    c.reuse_fn = lambda q, kind, opts: semantic_question_match({}, db, q, kind, opts, chat=chat)
+    result = fields.decide({"kind": "select", "label": new, "options": ["Yes", "No"],
+                            "required": True, "id": "x"}, c)
+    assert result.value == 0 and result.source == "library-semantic"
+    assert db.get_answer(fields.norm_key(new)) == "Yes"
+
+
+def test_local_model_groups_equivalent_unresolved_questions(db, profile):
+    import json
+    from jobagent.answers import semantic_question_match
+
+    old = "Are you available to begin work in June?"
+    new = "Would you be available to start working in June?"
+    old_key = fields.norm_key(old)
+    db.add_need("old-job", old_key, old, "select", ["Yes", "No"])
+    chat = lambda *_: json.dumps({"candidate_id": 0, "equivalent": True,
+                                  "confidence": "high", "reason": "same June availability question"})
+    match = semantic_question_match({}, db, new, "select", ["Yes", "No"], chat=chat)
+    assert match["qkey"] == old_key and match["answer"] is None
+
+    c = ctx(db, profile)
+    c.question_keys = {}
+    c.reuse_fn = lambda q, kind, opts: semantic_question_match({}, db, q, kind, opts, chat=chat)
+    result = fields.decide({"kind": "select", "label": new, "options": ["Yes", "No"],
+                            "required": True, "id": "x"}, c)
+    assert result.need and c.question_keys[fields.norm_key(new)] == old_key
+
+
+def test_semantic_reuse_rejects_low_confidence_and_sensitive_questions(db):
+    import json
+    from jobagent.answers import semantic_question_match
+
+    old = "Are you available to start in June?"
+    db.save_answer(fields.norm_key(old), old, "Yes")
+    low = lambda *_: json.dumps({"candidate_id": 0, "equivalent": True,
+                                 "confidence": "medium", "reason": "possibly related"})
+    assert semantic_question_match({}, db, "Can you start in July?", "select", ["Yes", "No"], chat=low) is None
+    assert semantic_question_match({}, db, "Have you ever been convicted of a felony?",
+                                   "select", ["Yes", "No"], chat=lambda *_: 1 / 0) is None
+
+
+def test_one_local_model_call_finds_existing_pending_variants(db):
+    import json
+    from jobagent.answers import semantic_equivalent_pending_keys
+
+    base = "Are you available to begin work in June?"
+    db.add_need("j1", fields.norm_key(base), base, "select", ["Yes", "No"])
+    same = "Would you be available to start working in June?"
+    different = "Would you be available to start working in July?"
+    db.add_need("j2", fields.norm_key(same), same, "select", ["Yes", "No"])
+    db.add_need("j3", fields.norm_key(different), different, "select", ["Yes", "No"])
+    chat = lambda *_: json.dumps({"candidate_ids": [0], "confidence": "high",
+                                  "reason": "same June start availability"})
+
+    keys = semantic_equivalent_pending_keys({}, db, fields.norm_key(base), base, "select",
+                                            ["Yes", "No"], "Yes", chat=chat)
+    assert keys == [fields.norm_key(same)]

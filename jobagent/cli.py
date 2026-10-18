@@ -3,6 +3,7 @@ from .db import DB
 from .config import load_config, DATA
 from .ingest import ingest
 from .profile import load_profile, missing_required, verified
+from .resume_sources import resume_inventory
 from . import worker
 
 
@@ -22,7 +23,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("ingest"); sub.add_parser("stats"); sub.add_parser("export"); sub.add_parser("login")
     sub.add_parser("profile-check"); sub.add_parser("retry-failed"); sub.add_parser("enable-live"); sub.add_parser("answer")
-    d = sub.add_parser("dry-run"); d.add_argument("n", type=int, nargs="?", default=5); d.add_argument("--platform"); d.add_argument("--no-review", action="store_true")
+    d = sub.add_parser("dry-run"); d.add_argument("n", type=int, nargs="?", default=5); d.add_argument("--platform"); d.add_argument("--no-review", action="store_true", help="skip resume tailoring during this dry run")
     w = sub.add_parser("worker"); w.add_argument("--limit", type=int)
     ds = sub.add_parser("dashboard"); ds.add_argument("--port", type=int, default=5055)
     a = ap.parse_args(argv)
@@ -35,13 +36,15 @@ def main(argv=None):
     elif a.cmd == "export":
         print(export_csv(db))
     elif a.cmd == "profile-check":
-        p = load_profile(); m = missing_required(p)
+        p = load_profile(); has_resume = any(x.get("role") == "primary" for x in resume_inventory(db, p))
+        m = missing_required(p, has_resume=has_resume)
         print("verified:", p.get("verified"), "| missing:", m or "none")
     elif a.cmd == "retry-failed":
         db.x("UPDATE jobs SET status='NOT_STARTED', retries=0, next_try_at=0 WHERE status IN ('FAILED','UNCERTAIN','BLOCKED')")
     elif a.cmd == "enable-live":
-        if not verified(load_profile()):
-            sys.exit("profile not verified/complete: " + str(missing_required(load_profile())))
+        p = load_profile(); has_resume = any(x.get("role") == "primary" for x in resume_inventory(db, p))
+        if not verified(p, has_resume=has_resume):
+            sys.exit("profile not verified/complete: " + str(missing_required(p, has_resume=has_resume)))
         db.kv_set("settings", {**(db.kv_get("settings", {}) or {}), "live_submit": True})
         db.x("UPDATE jobs SET next_try_at=0, last_error=NULL WHERE last_error='DRYRUN_OK'")
         print("live submission ENABLED; dry-run jobs requeued")
@@ -60,7 +63,8 @@ def main(argv=None):
             if v:
                 db.resolve_need(n["qkey"], v)
     elif a.cmd == "dry-run":  # never submits, regardless of saved settings
-        worker.run(db, once_limit=a.n, override={"live_submit": False, "headless": True, **({"tailor_review_first": 0} if a.no_review else {})}, platform=a.platform)
+        worker.run(db, once_limit=a.n, override={"live_submit": False, "headless": True,
+                                                 **({"tailor_resume": False} if a.no_review else {})}, platform=a.platform)
     elif a.cmd == "worker":
         worker.run(db, once_limit=a.limit)
     elif a.cmd == "dashboard":

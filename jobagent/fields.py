@@ -34,7 +34,8 @@ SCAN_JS = r"""
     if (!t && el.getAttribute('aria-labelledby')) t = el.getAttribute('aria-labelledby').split(' ').map(i => txt(document.getElementById(i))).join(' ');
     if (!t) t = el.getAttribute('aria-label') || '';
     if (!t) { const fs = el.closest('fieldset'); const lg = fs && fs.querySelector('legend'); if (lg) t = txt(lg); }
-    if (!t || (!/\s/.test(t) && /[\[\]_\d]|.{26,}/.test(t))) {   // empty or machine name: look at the surrounding question container
+    const genericFile = (el.type || '').toLowerCase() === 'file' && /^(upload|attach|choose|browse)( a)?( file| document)?$/i.test(t);
+    if (!t || genericFile || (!/\s/.test(t) && /[\[\]_\d]|.{26,}/.test(t))) {   // empty, generic upload text, or machine name: use surrounding question
       const q = qlab(el); if (q) t = q;
     }
     if (!t) t = el.placeholder || el.name || '';
@@ -131,6 +132,26 @@ PREF_BOOL = [
     (r"previously completed .*internship|relevant (full-time )?(work )?experience", "preferences.has_prior_experience"),
 ]
 EEO = re.compile(r"gender|race|ethnic|veteran|disabilit|sexual orientation|transgender|hispanic|latino|pronoun|protected", re.I)
+DEMO_RULES = [
+    (r"pronoun", "identity.pronouns"),
+    (r"gender|\bsex\b|transgender", "demographics.gender"),
+    (r"race", "demographics.race"),
+    (r"ethnic|hispanic|latino", "demographics.ethnicity"),
+    (r"veteran", "demographics.veteran"),
+    (r"disabilit", "demographics.disability"),
+]
+
+
+def demographic_boolean(path: str | None, value, label: str) -> bool | None:
+    """Translate a saved category into a site's equivalent Yes/No EEO question."""
+    if path != "demographics.ethnicity" or not re.search(r"hispanic|latin[oaex]", label, re.I):
+        return None
+    normalized = re.sub(r"[^a-z]+", " ", str(value or "").lower()).strip()
+    if re.search(r"\b(non|not|no)\s+(hispanic|latin)", normalized):
+        return False
+    if re.search(r"\bhispanic\b|\blatin(?:o|a|x|e)?\b", normalized):
+        return True
+    return None
 # legal declarations the user must approve explicitly
 LEGAL = re.compile(r"criminal|convict|felony|background check|drug test|non-?compete|security clearance|export control|itar|government official|"
                    r"citizen(ship)?|visa status|immigration", re.I)
@@ -149,6 +170,45 @@ def date_part(v: str, label: str):
     if re.search(r"year", label, re.I):
         return y
     return None
+
+
+def graduation_details(v: str):
+    """Return safe, deterministic ways to express a YYYY-MM graduation date."""
+    m = re.match(r"(\d{4})-(\d{2})", v or "")
+    if not m:
+        return None
+    year, month_text = m.groups()
+    month = int(month_text)
+    if not 1 <= month <= 12:
+        return None
+    term = "Spring" if month <= 5 else ("Summer" if month <= 8 else "Fall")
+    return {
+        "year": year,
+        "short_year": year[-2:],
+        "month": MONTHS[month - 1],
+        "month_number": month_text,
+        "term": term,
+        "term_long": f"{term} {year}",
+        "term_short": f"{term} {year[-2:]}",
+        "date": f"{month_text}/{year}",
+        "month_year": f"{MONTHS[month - 1]} {year}",
+    }
+
+
+def graduation_candidates(v: str, label: str) -> list[str]:
+    """Best-first values for matching common graduation dropdown formats."""
+    info = graduation_details(v)
+    if not info:
+        return []
+    if re.search(r"semester|season|term|when (?:do|will|are).{0,20}graduat", label, re.I):
+        order = ("term_long", "term_short", "month_year", "date", "year")
+    elif re.search(r"month", label, re.I) and not re.search(r"year", label, re.I):
+        order = ("month", "month_number")
+    elif re.search(r"year", label, re.I) and not re.search(r"month", label, re.I):
+        order = ("year", "short_year", "term_long", "term_short")
+    else:
+        order = ("date", "month_year", "term_long", "term_short", "year")
+    return [info[k] for k in order]
 
 
 def academic_year(grad: str, today=None):
@@ -209,6 +269,55 @@ def pick_range(options, x: float):
     return None
 
 
+PAY_RANGE = re.compile(
+    r"\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:-|–|—|to)\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)",
+    re.I)
+PAY_SINGLE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)", re.I)
+
+
+def salary_from_posting(job_text: str, label: str, options=None, input_type="text"):
+    """Use the midpoint of an explicit posted compensation range; never invent one."""
+    text = " ".join((job_text or "").split())
+    candidates = []
+    for match in PAY_RANGE.finditer(text):
+        low, high = (float(x.replace(",", "")) for x in match.groups())
+        if low <= 0 or high < low:
+            continue
+        context = text[max(0, match.start() - 80):match.end() + 100].lower()
+        unit = "hour" if re.search(r"/\s*(hr|hour)|per\s+(hr|hour)|hourly", context) else (
+            "year" if re.search(r"/\s*(yr|year)|per\s+(yr|year)|annual|salary", context) else
+            ("year" if high >= 1000 else "hour"))
+        candidates.append((low, high, unit))
+    if not candidates:
+        for match in PAY_SINGLE.finditer(text):
+            value = float(match.group(1).replace(",", ""))
+            context = text[max(0, match.start() - 80):match.end() + 100].lower()
+            if not re.search(r"compensation|pay|salary|wage|hourly|per\s+(hour|year)|/\s*(hr|yr)", context):
+                continue
+            unit = "hour" if re.search(r"/\s*(hr|hour)|per\s+(hr|hour)|hourly", context) else (
+                "year" if value >= 1000 else "hour")
+            candidates.append((value, value, unit))
+            break
+    if not candidates:
+        return None
+    low, high, source_unit = candidates[0]
+    target = (low + high) / 2
+    requested_unit = ("hour" if re.search(r"hour|hourly|/\s*hr", label, re.I) else
+                      "year" if re.search(r"annual|yearly|per year|salary", label, re.I) else source_unit)
+    if source_unit == "hour" and requested_unit == "year":
+        target *= 2080
+    elif source_unit == "year" and requested_unit == "hour":
+        target /= 2080
+    if options:
+        return pick_range(options, target)
+    rounded = round(target, 2)
+    if input_type == "number":
+        return str(int(rounded)) if rounded.is_integer() else f"{rounded:.2f}".rstrip("0").rstrip(".")
+    if requested_unit == "year":
+        return f"${rounded:,.0f} per year"
+    return f"${rounded:.2f}".rstrip("0").rstrip(".") + " per hour"
+
+
 def decide(f: dict, ctx) -> Decision:
     """ctx: profile, db, resume_path, answer_fn(question, limit)->str|None"""
     p = ctx.profile
@@ -262,12 +371,44 @@ def decide(f: dict, ctx) -> Decision:
                 i = pick_option(opts, str(g))
             return Decision(value=i, source="profile") if i is not None else Decision(need=(label, kind))
         return Decision(value=str(g), source="profile")
+    if re.search(r"salary|compensation|pay expectation|desired pay|expected pay|hourly rate|wage", label, re.I):
+        grounded = salary_from_posting(getattr(ctx, "job_text", ""), label, opts, f.get("inputType", "text"))
+        if grounded is not None:
+            return Decision(value=grounded, source="job-posting-pay")
+        configured = get(p, "preferences.salary_expectation")
+        if configured not in (None, ""):
+            i = pick_option(opts, configured) if opts else None
+            if opts and i is None:
+                return Decision(need=(label, kind))
+            return Decision(value=i if opts else str(configured), source="profile")
+        return Decision(need=(label, kind)) if f.get("required") else Decision(skip=True)
     if EEO.search(label) and not re.search(r"auth|sponsor", label, re.I):
         pref = get(p, "demographics.default") or "decline"
-        if kind in ("select", "radio", "combobox", "btngroup") and pref == "decline":
-            i = next((i for i, o in enumerate(opts) if DECLINE.search(o)), None)
+        wanted = demo_path = None
+        if pref != "decline":
+            matched = next(((path, get(p, path)) for pat, path in DEMO_RULES
+                            if re.search(pat, label, re.I) and get(p, path)), None)
+            if matched:
+                demo_path, wanted = matched
+        boolean_wanted = demographic_boolean(demo_path, wanted, label)
+        if kind in ("select", "radio", "combobox", "btngroup"):
+            i = pick_option(opts, wanted) if wanted else None
+            if i is None and boolean_wanted is not None:
+                i = pick_option(opts, boolean_wanted)
             if i is not None:
-                return Decision(value=i, source="eeo")
+                return Decision(value=i, source="profile-eeo")
+            if pref == "decline":
+                i = next((i for i, o in enumerate(opts) if DECLINE.search(o)), None)
+                if i is not None:
+                    return Decision(value=i, source="eeo")
+        elif kind == "checkbox" and boolean_wanted is not None:
+            return Decision(value=True, source="profile-eeo") if boolean_wanted else Decision(skip=True)
+        elif wanted:
+            return Decision(value=str(wanted), source="profile-eeo")
+        if getattr(ctx, "choice_fn", None) and kind in ("select", "radio", "combobox", "btngroup"):
+            inferred = ctx.choice_fn(label, opts)
+            if inferred is not None:
+                return Decision(value=inferred, source="llm-grounded")
         return Decision(skip=not f.get("required"), need=(label, kind) if f.get("required") else None)
     for pat, path in PREF_BOOL:
         if re.search(pat, label, re.I) and kind != "file":
@@ -294,7 +435,8 @@ def decide(f: dict, ctx) -> Decision:
                 i = pick_option(opts, bool(v))
                 return Decision(value=i, source="profile") if i is not None else Decision(need=(label, kind))
             return Decision(value="Yes" if v else "No", source="profile")
-    if re.search(r"previous(ly)? (employ|work)|worked (for|at) .* before|former employee|have you (ever )?(worked|been employed) (at|for|with)", label, re.I):
+    if re.search(r"previous(ly)? (employ|work)|worked (for|at|here|there).*before|former employee|"
+                 r"have you (ever )?(worked|been employed) (at|for|with|here)|prior employment (at|with)", label, re.I):
         prior = [c.lower() for c in (get(p, "preferences.previously_worked_for_companies") or [])]
         if any(c and c in label.lower() for c in prior):
             return Decision(need=(label, kind))
@@ -303,6 +445,16 @@ def decide(f: dict, ctx) -> Decision:
             i = next((k for k, o in enumerate(opts) if re.search(r"\bnever\b|\bnone\b|\bno\b|have not|not (a )?(previous|current|former)", o, re.I)
                       and not re.search(r"\b(previous|current|former) (employee|contractor)", o, re.I)), None)
         return Decision(value=i if opts else "No", source="profile") if (i is not None or not opts) else Decision(need=(label, kind))
+    if re.search(r"(employee|internal|personal) referral|referred (by|through)|do you have (a )?referr", label, re.I):
+        if re.search(r"name|e-?mail|who|provide|specify|details", label, re.I):
+            return Decision(need=(label, kind)) if f.get("required") else Decision(skip=True)
+        i = pick_option(opts, False) if opts else None
+        if i is None and opts:
+            i = next((k for k, o in enumerate(opts)
+                      if re.search(r"not referred|no referral|without (a )?referral", o, re.I)), None)
+        if i is not None or not opts:
+            return Decision(value=i if opts else "No", source="profile-default")
+        return Decision(need=(label, kind)) if f.get("required") else Decision(skip=True)
     if kind == "checkbox":
         if saved is not None:
             return Decision(value=bool(YES.match(saved.strip())), source="library")
@@ -313,6 +465,18 @@ def decide(f: dict, ctx) -> Decision:
                 return Decision(value=True, source="profile")
             return Decision(need=(label, kind))
         return Decision(skip=True)
+    if re.search(r"graduat|expected completion", label, re.I) and not re.search(r"high school|sat|act", label, re.I):
+        grad = get(p, "education.graduation_date") or ""
+        candidates = graduation_candidates(grad, label)
+        if opts:
+            for candidate in candidates:
+                i = pick_option(opts, candidate)
+                if i is not None:
+                    return Decision(value=i, source="profile-derived")
+        elif re.search(r"semester|season|term|when (?:do|will|are).{0,20}graduat", label, re.I):
+            info = graduation_details(grad)
+            if info:
+                return Decision(value=info["term_long"], source="profile-derived")
     if re.search(r"(start|end|graduat|completion)[^?]*(month|year)|(month|year)[^?]*(start|end|graduat)", label, re.I) and not re.search(r"high school|sat|act", label, re.I):
         src = "education.start_date" if re.search(r"start", label, re.I) else "education.graduation_date"
         part = date_part(get(p, src) or "", label)
@@ -352,6 +516,22 @@ def decide(f: dict, ctx) -> Decision:
                     return Decision(need=(label, kind)) if f.get("required") else Decision(skip=True)
                 return Decision(value=i, source="profile")
             return Decision(value=str(v), source="profile")
+    # Let the inexpensive/local model connect differently worded versions of the same question.
+    # It may select only an existing answer or unresolved queue key; it cannot invent a response.
+    if label and getattr(ctx, "reuse_fn", None):
+        match = ctx.reuse_fn(label, kind, opts)
+        if match:
+            answer = match.get("answer")
+            if answer is None:
+                ctx.question_keys[key] = match["qkey"]
+            elif kind in ("select", "radio", "combobox", "btngroup"):
+                i = pick_option(opts, answer)
+                if i is not None:
+                    ctx.db.save_answer(key, label, answer, "semantic-reuse")
+                    return Decision(value=i, source="library-semantic")
+            else:
+                ctx.db.save_answer(key, label, answer, "semantic-reuse")
+                return Decision(value=answer, source="library-semantic")
     # factual question the profile may settle: let the local model pick, but only with grounded evidence
     if label and getattr(ctx, "choice_fn", None) and (opts or (kind == "text" and len(label) <= 120)):
         got = ctx.choice_fn(label, opts)
@@ -362,7 +542,7 @@ def decide(f: dict, ctx) -> Decision:
             return Decision(need=(label, "draft", got))
     # open question
     if kind in ("textarea", "text") and label:
-        if (kind == "textarea" or len(label) > 40) and f.get("required"):
+        if kind == "textarea" or len(label) > 40:
             ans = ctx.answer_fn(label, f.get("maxlength"))
             if ans:
                 if get(p, "preferences.trust_llm_answers") is True:

@@ -96,3 +96,37 @@ class DB:
         for r in self.q("SELECT status, COUNT(*) n FROM jobs GROUP BY status"):
             c[r["status"]] = r["n"]
         return c
+
+    def revert_jobs(self, job_ids) -> dict:
+        """Reset local, unsubmitted application work and discard its unanswered queue entries."""
+        ids = list(dict.fromkeys(str(x) for x in job_ids if x))
+        if not ids:
+            return {"reverted": 0, "questions_cleared": 0, "protected": []}
+        placeholders = ",".join("?" for _ in ids)
+        protected_statuses = {"APPLIED", "ALREADY_APPLIED", "UNCERTAIN"}
+        with _lock:
+            rows = [dict(r) for r in self.c.execute(
+                f"SELECT id,status FROM jobs WHERE id IN ({placeholders})", ids).fetchall()]
+            protected = [r for r in rows if r["status"] in protected_statuses]
+            allowed = [r["id"] for r in rows if r["status"] not in protected_statuses]
+            if not allowed:
+                return {"reverted": 0, "questions_cleared": 0, "protected": protected}
+            allowed_marks = ",".join("?" for _ in allowed)
+            with self.c:
+                cleared = self.c.execute(
+                    f"DELETE FROM human_queue WHERE resolved_at IS NULL AND job_id IN ({allowed_marks})", allowed).rowcount
+                cache_keys = [f"paid_resume@{job_id}" for job_id in allowed]
+                cache_marks = ",".join("?" for _ in cache_keys)
+                self.c.execute(f"DELETE FROM kv WHERE k IN ({cache_marks})", cache_keys)
+                review_keys = [f"resume@{job_id}" for job_id in allowed]
+                review_marks = ",".join("?" for _ in review_keys)
+                self.c.execute(f"DELETE FROM answers WHERE qkey IN ({review_marks})", review_keys)
+                self.c.execute(
+                    f"""UPDATE jobs SET status='NOT_STARTED', status_reason='reverted by user; ready to process again',
+                        attempted_at=NULL, submitted_at=NULL, resume_used=NULL, retries=0, evidence=NULL,
+                        last_error=NULL, next_try_at=0, questions_json='[]' WHERE id IN ({allowed_marks})""", allowed)
+                now = time.time()
+                self.c.executemany("INSERT INTO events(ts,job_id,msg) VALUES(?,?,?)",
+                                   [(now, job_id, "application work reverted by user; unanswered questions cleared")
+                                    for job_id in allowed])
+            return {"reverted": len(allowed), "questions_cleared": cleared, "protected": protected}

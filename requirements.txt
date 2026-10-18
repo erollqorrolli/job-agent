@@ -3,3 +3,6 @@ pyyaml
 requests
 flask
 pytest
+python-docx
+pypdf
+PyJWT[crypto]>=2.8

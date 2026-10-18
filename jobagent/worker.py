@@ -7,13 +7,22 @@ from .db import DB
 from .ingest import ingest
 from .runner import process, Outcome
 from .profile import load_profile, verified, missing_required
+from .resume_sources import resume_inventory
 
 SPEED = {"greenhouse": 0, "lever": 0, "ashby": 0, "smartrecruiters": 1, "workable": 1, "generic": 2}
 
 
 def effective_cfg(db):
     cfg = load_config()
-    cfg.update(db.kv_get("settings", {}) or {})
+    settings = db.kv_get("settings", {}) or {}
+    base_editor = cfg.get("resume_editor", {}) or {}
+    editor_override = settings.get("resume_editor") or {}
+    cfg.update(settings)
+    if editor_override:
+        base_models = base_editor.get("models", {}) or {}
+        override_models = editor_override.get("models", {}) or {}
+        cfg["resume_editor"] = {**base_editor, **editor_override,
+                                "models": {**base_models, **override_models}}
     return cfg
 
 
@@ -39,6 +48,20 @@ def launch(pw, cfg):
                                                  viewport={"width": 1280, "height": 900})
 
 
+def requeue_manual_resume_reviews(db, cfg):
+    """Resume-only review gates are non-blocking when the final submit is manual."""
+    if cfg.get("handoff", "fallback") != "always" or cfg.get("headless", False):
+        return 0
+    cur = db.x("""UPDATE jobs SET status='NOT_STARTED',
+                  status_reason='tailored resume ready; queued for manual final review', next_try_at=0
+                  WHERE status='NEEDS_USER_INPUT'
+                    AND EXISTS (SELECT 1 FROM human_queue h WHERE h.job_id=jobs.id
+                                AND h.resolved_at IS NULL AND h.kind='resume')
+                    AND NOT EXISTS (SELECT 1 FROM human_queue h WHERE h.job_id=jobs.id
+                                    AND h.resolved_at IS NULL AND h.kind!='resume')""")
+    return cur.rowcount
+
+
 def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, platform=None):
     db = db or DB()
     stop = {"flag": False}
@@ -48,8 +71,9 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
     db.kv_set("control", "run")
     db.kv_set("current", None)
     done, tried, host_last = 0, set(), {}
-    ready = {}    # job id -> (page, job) waiting for the user's Submit click
+    ready = {}    # job id -> (page, job, held status) kept open for review or the user's Submit click
     db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='READY_TO_SUBMIT'")   # tabs from a previous run are gone
+    requeue_manual_resume_reviews(db, {**effective_cfg(db), **(override or {})})
     pw = sync_playwright().start()
     ctx = None
     try:
@@ -59,6 +83,9 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             if control == "stop":
                 break
             if control == "pause":
+                # Pause must keep the browser session alive. Still observe held tabs so a
+                # manual submission made while paused can be recorded as confirmed.
+                poll_ready(db, ready, log)
                 time.sleep(2); continue
             if time.time() - (db.kv_get("last_ingest", 0) or 0) > cfg.get("poll_minutes", 120) * 60:
                 try:
@@ -67,10 +94,15 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                     log("ingest failed", e)
                     db.kv_set("last_ingest", time.time() - cfg.get("poll_minutes", 120) * 60 + 600)
             if done >= (once_limit or cfg.get("max_per_session", 50)):
+                if ready:
+                    db.kv_set("control", "pause")
+                    db.kv_set("current", f"session limit reached; {len(ready)} review tab(s) kept open")
+                    log("session limit reached; paused with review tabs open")
+                    continue
                 log("session limit reached"); break
             poll_ready(db, ready, log)
             if len(ready) >= cfg.get("max_ready_tabs", 8):   # don't pile up unlimited tabs; keep polling until some are submitted
-                db.kv_set("current", f"{len(ready)} forms ready: click Submit in the browser tabs")
+                db.kv_set("current", f"{len(ready)} forms waiting for review in the browser tabs")
                 time.sleep(5); continue
             # jobs the user just answered are eligible again within this session
             tried &= {r["id"] for r in db.q("SELECT id FROM jobs WHERE status IN ('APPLIED','UNCERTAIN','ALREADY_APPLIED','INELIGIBLE','CLOSED','FAILED','BLOCKED','READY_TO_SUBMIT')")}
@@ -79,8 +111,11 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                 if once_limit:
                     break
                 time.sleep(15); continue
-            if cfg.get("live_submit") and not verified(load_profile()):
-                log("live_submit on but profile unverified/incomplete:", missing_required(load_profile()))
+            profile = load_profile()
+            has_resume = any(x.get("role") == "primary" for x in resume_inventory(db, profile))
+            if cfg.get("live_submit") and not verified(profile, has_resume=has_resume):
+                log("live_submit on but profile unverified/incomplete:",
+                    missing_required(profile, has_resume=has_resume))
                 db.kv_set("control", "pause"); continue
             host = urlsplit(job["url"]).netloc
             wait = 8 - (time.time() - host_last.get(host, 0))
@@ -111,7 +146,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             host_last[host] = time.time()
             apply_outcome(db, cfg, job, out)
             if getattr(out, "keep_page", False):
-                ready[job["id"]] = (page, job)
+                ready[job["id"]] = (page, job, out.status)
             tried.add(job["id"])
             # the session cap counts real submissions in live mode; jobs parked for your input don't use it up
             if not cfg.get("live_submit") or out.submitted:
@@ -134,19 +169,28 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
 
 
 def poll_ready(db, ready: dict, log=print):
-    """Check tabs the user was asked to submit. Confirmed -> APPLIED; closed without confirmation -> back to the user."""
+    """Keep review tabs alive and detect a user's manual submission."""
     from . import detect
     from .adapters import adapter_for
     from .runner import shot
-    for jid, (page, job) in list(ready.items()):
+    for jid, entry in list(ready.items()):
+        page, job = entry[:2]
+        held_status = entry[2] if len(entry) > 2 else "READY_TO_SUBMIT"
         try:
             if page.is_closed():
-                db.update(jid, status="UNCERTAIN", status_reason="tab closed before a confirmation was seen. Check your email")
+                if held_status == "READY_TO_SUBMIT":
+                    db.update(jid, status="UNCERTAIN", status_reason="tab closed before a confirmation was seen. Check your email")
                 ready.pop(jid); continue
             c = detect.confirmation(page, adapter_for(job["platform"]))
             if c:
+                db.x("""UPDATE human_queue SET answer='completed manually in browser', resolved_at=?
+                        WHERE job_id=? AND resolved_at IS NULL""", (time.time(), jid))
                 db.update(jid, status="APPLIED", status_reason="confirmed", submitted_at=time.time(), evidence=f"{c} | {shot(page, job, 'confirm')}")
                 log(f"APPLIED (confirmed)  {job['company']} - {job['title']}")
+                page.close(); ready.pop(jid)
+                continue
+            current = db.q("SELECT status FROM jobs WHERE id=?", (jid,))
+            if held_status != "READY_TO_SUBMIT" and current and current[0]["status"] != held_status:
                 page.close(); ready.pop(jid)
         except Exception:
             ready.pop(jid, None)

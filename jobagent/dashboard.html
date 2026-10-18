@@ -13,7 +13,7 @@ h1{font:500 28px "IBM Plex Serif",serif;margin:0 0 4px}h2{font:600 12px "IBM Ple
 .stat b{display:block;font:500 26px "IBM Plex Mono",monospace}.stat span{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
 .bar{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
 button{font:600 12px "IBM Plex Sans";letter-spacing:.05em;text-transform:uppercase;padding:9px 14px;border:1px solid var(--ink);background:transparent;color:var(--ink);border-radius:1px;cursor:pointer}
-button:hover{background:var(--ink);color:var(--bg)}button.go{background:var(--ink);color:var(--bg)}button.warn{border-color:var(--red);color:var(--red)}button.warn:hover{background:var(--red);color:var(--bg)}
+button:hover{background:var(--ink);color:var(--bg)}button.go{background:var(--ink);color:var(--bg)}button.warn{border-color:var(--red);color:var(--red)}button.warn:hover{background:var(--red);color:var(--bg)}button:disabled{opacity:.45;cursor:not-allowed}
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule)}td,th{padding:7px 10px;border-bottom:1px solid var(--rule);text-align:left;vertical-align:top;font-size:13px}
 th{font:500 11px "IBM Plex Mono";text-transform:uppercase;color:var(--mute)}
 .st{font:500 11px "IBM Plex Mono"}.APPLIED{color:var(--ok)}.FAILED,.BLOCKED{color:var(--red)}.NEEDS_USER_INPUT,.UNCERTAIN{color:#8a5a00}
@@ -22,16 +22,28 @@ th{font:500 11px "IBM Plex Mono";text-transform:uppercase;color:var(--mute)}
 input,select{font:inherit;padding:6px 8px;border:1px solid var(--rule);background:var(--card);color:var(--ink);border-radius:1px}
 .need{border:1px solid var(--rule);background:var(--card);padding:10px 12px;margin-bottom:8px}.need input{width:60%}
 .set{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}.set label{font-size:12px;color:var(--mute);display:block}
+.resume-box{border:1px solid var(--rule);background:var(--card);padding:12px}.resume-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--rule)}
+.resume-row:last-child{border:0}.pill{font:500 10px "IBM Plex Mono";text-transform:uppercase;border:1px solid var(--rule);padding:2px 5px}.resume-name{flex:1}
+.editor-controls{display:flex;align-items:end;flex-wrap:wrap;gap:10px}.editor-controls label{display:block;color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.editor-controls input,.editor-controls select{min-width:220px}.editor-note{color:var(--mute);font-size:12px;margin-top:8px}.editor-auth{margin-top:10px;padding-top:10px;border-top:1px solid var(--rule)}
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}.profile-grid label{display:block;color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.profile-grid input,.profile-grid select{width:100%}.profile-group{grid-column:1/-1;font:600 11px "IBM Plex Mono";text-transform:uppercase;border-bottom:1px solid var(--rule);padding-top:8px}.missing{color:var(--red);font-size:12px;margin:8px 0}
 </style></head><body><main>
 <h1>Job Agent</h1><div class="sub" id="sub">loading</div>
 <div class="now" id="now"></div>
+<h2>Applicant preflight</h2><div class="resume-box" id="profile"></div>
 <div class="bar">
-<button class="go" onclick="act('start')">Start applying</button><button onclick="act('pause')">Pause</button><button onclick="act('resume')">Resume</button>
+<button class="go" id="start" onclick="act('start')">Start applying</button><button onclick="act('pause')">Pause</button><button onclick="act('resume')">Resume</button>
 <button class="warn" onclick="act('stop')">Stop</button><button onclick="act('retry')">Retry failed</button><button onclick="check()">Check new jobs</button><button onclick="exp()">Export results</button>
 </div>
 <div class="live" id="live"></div>
+<h2>Premium writing model</h2><div class="resume-box" id="editor"></div>
+<h2>Resume sources</h2><div class="resume-box"><div id="resumes" style="margin:8px 0"></div>
+<input id="resume_files" type="file" multiple accept=".pdf,.docx,.txt,.tex">
+<button onclick="uploadResumes('supplementary')">Upload supplementary</button>
+<button onclick="uploadResumes('primary')">Upload first as primary</button>
+<div class="sub" style="margin:8px 0 0">Upload a self-contained .tex file as primary to enable premium tailoring. It is compiled locally; every section except Education may be edited, while section headers and LaTeX formatting stay locked. PDF/DOCX/TXT primaries are submitted unchanged. Supplementary resumes provide the premium model with your full background.</div></div>
 <h2>Progress</h2><div class="grid" id="grid"></div>
-<h2>Questions needing input (grouped)</h2><div id="needs"></div>
+<h2>Questions needing input (grouped)</h2><div class="bar"><button class="warn" onclick="revertPending()">Revert all pending work</button></div><div class="editor-note">Clears unanswered questions and resets unsubmitted jobs to Not Started. It cannot undo an application already submitted to an employer.</div><div id="needs"></div>
 <h2>Latest applications</h2><table id="latest"></table>
 <h2>View applications</h2><select id="vs" onchange="view()"><option value="">choose status</option></select><table id="jobs" style="margin-top:8px"></table>
 <h2>Settings</h2><div class="set" id="set"></div><div style="margin-top:10px"><button onclick="save()">Save settings</button></div>
@@ -39,21 +51,65 @@ input,select{font:inherit;padding:6px 8px;border:1px solid var(--rule);backgroun
 </main><script>
 const $=id=>document.getElementById(id), E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function api(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
-const act=n=>api('/api/action/'+n,{}).then(refresh);
+async function act(n){const r=await api('/api/action/'+n,{});if(r.error)alert(r.error+(r.missing?.length?'\nMissing: '+r.missing.join(', '):''));refresh()}
 async function check(){const r=await api('/api/action/check',{});alert(JSON.stringify(r));refresh()}
 async function exp(){const r=await api('/api/action/export',{});alert('Saved: '+r.path)}
 async function live(on){const r=await api('/api/action/live',{on});if(r.error)alert(r.error+': '+(r.missing||[]).join(', '));refresh()}
-async function ans(k,i){const v=$('a'+i).value.trim();if(!v)return;await api('/api/answer',{qkey:k,answer:v});refresh()}
+async function changeEditorProvider(provider){const r=await api('/api/resume-editor/config',{provider});if(r.error)alert(r.error);refresh()}
+async function saveEditor(){const provider=$('editor_provider').value,model=$('editor_model').value.trim();const r=await api('/api/resume-editor/config',{provider,model});if(r.error)alert(r.error);refresh()}
+function connectChatGPT(){window.location=`http://127.0.0.1:${location.port||5055}/auth/chatgpt/start`}
+async function refreshChatGPTModels(){const r=await api('/api/resume-editor/chatgpt/models',{});if(r.error)alert(r.error);refresh()}
+async function disconnectChatGPT(){if(!confirm('Disconnect this ChatGPT account from Job Agent?'))return;const r=await api('/api/resume-editor/chatgpt/disconnect',{});alert(r.message||'Disconnected');refresh()}
+async function saveGeminiKey(){const key=$('gemini_key').value.trim();if(!key)return alert('Paste a Gemini API key first.');const r=await api('/api/resume-editor/gemini-key',{api_key:key});if(r.error)alert(r.error);else $('gemini_key').value='';refresh()}
+async function disconnectGemini(){if(!confirm('Remove the Gemini key saved by Job Agent?'))return;const r=await api('/api/resume-editor/gemini-disconnect',{});alert(r.message||'Removed');refresh()}
+function renderEditor(e){
+ const active=document.activeElement;if(active&&active.closest&&active.closest('#editor'))return;
+ const opts=(e.models||[]).map(m=>`<option value="${E(m.slug)}" ${m.slug===e.model?'selected':''}>${E(m.display_name||m.slug)}</option>`).join('');
+ const model=e.provider==='chatgpt'?`<select id="editor_model"><option value="">${e.auth_connected?'Choose a model':'Connect ChatGPT first'}</option>${opts}</select>`:
+  `<input id="editor_model" list="editor_models" value="${E(e.model)}" placeholder="model name"><datalist id="editor_models">${opts}</datalist>`;
+ let auth='';
+ if(e.provider==='chatgpt')auth=e.auth_connected?`<b>Connected:</b> ${E(e.account)} · ChatGPT plan usage enabled. <button onclick="connectChatGPT()">Reconnect</button> <button onclick="refreshChatGPTModels()">Refresh models</button> <button onclick="window.open('/api/resume-editor/usage-link','_blank')">Manage usage</button> <button class="warn" onclick="disconnectChatGPT()">Disconnect</button>`:
+  `<button class="go" onclick="connectChatGPT()">Continue with ChatGPT</button> <span class="editor-note">Uses an eligible Plus or Pro plan, not API-key billing.</span>`;
+ if(e.provider==='gemini')auth=e.key_source?`<b>Gemini key connected</b> (${E(e.key_source)}). <input id="gemini_key" type="password" autocomplete="off" placeholder="replace API key"> <button onclick="saveGeminiKey()">Replace key</button> <button class="warn" onclick="disconnectGemini()">Remove saved key</button>`:
+  `<input id="gemini_key" type="password" autocomplete="off" placeholder="Gemini API key"> <button class="go" onclick="saveGeminiKey()">Connect Gemini</button>`;
+ if(e.provider==='openai')auth=e.connected?'<b>OpenAI API key connected from RESUME_LLM_API_KEY.</b>':'Set RESUME_LLM_API_KEY before starting the dashboard.';
+ const readiness=`<div class="editor-note"><b>Essay autofill:</b> ${e.essay_ready?'ready':'setup needed'} · <b>Resume tailoring:</b> ${e.tailoring_ready?'active':'inactive'}${e.tailoring_blocker?'<br><b>'+E(e.tailoring_blocker)+'</b>':''}</div>`;
+ $('editor').innerHTML=`<div class="editor-controls"><div><label>Provider</label><select id="editor_provider" onchange="changeEditorProvider(this.value)"><option value="chatgpt" ${e.provider==='chatgpt'?'selected':''}>ChatGPT plan</option><option value="gemini" ${e.provider==='gemini'?'selected':''}>Gemini API</option><option value="openai" ${e.provider==='openai'?'selected':''}>OpenAI API key</option></select></div><div><label>Resume + essay model</label>${model}</div><button onclick="saveEditor()">Save provider & model</button><span class="pill">${e.ready?'model ready':'setup needed'}</span></div><div class="editor-auth">${auth}</div>${readiness}`+
+  (e.provider==='gemini'?'<div class="editor-note">Gemini receives the full text of every resume and may patch any non-Education section in the primary LaTeX resume. Section headers and LaTeX formatting stay locked. Free-tier content may be used by Google to improve its products.</div>':'<div class="editor-note">This provider receives the full text of every resume and may patch any non-Education section in the primary LaTeX resume. Section headers and LaTeX formatting stay locked. You review factual accuracy before submission.</div>');
+}
+function renderProfile(p,missing){
+ const active=document.activeElement;if(active&&active.closest&&active.closest('#profile'))return;
+ const v=(o,...ks)=>ks.reduce((x,k)=>x&&x[k],o), field=(id,label,value,type='text')=>`<div><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${E(value)}"></div>`;
+ const tri=(id,label,value,optional=true)=>`<div><label for="${id}">${label}</label><select id="${id}"><option value="" ${value==null?'selected':''}>${optional?'Not set':'Choose'}</option><option value="true" ${value===true?'selected':''}>Yes</option><option value="false" ${value===false?'selected':''}>No</option></select></div>`;
+ const dem=v(p,'demographics')||{},pref=v(p,'preferences')||{},ed=v(p,'education')||{},wa=v(p,'work_authorization')||{},id=v(p,'identity')||{},addr=id.address||{};
+ $('profile').innerHTML=`<div class="profile-grid"><div class="profile-group">Identity & contact</div>${field('p_first','First name *',id.first_name)}${field('p_last','Last name *',id.last_name)}${field('p_email','Email *',id.email,'email')}${field('p_phone','Phone *',id.phone,'tel')}${field('p_pronouns','Pronouns',id.pronouns)}${field('p_city','City',addr.city)}${field('p_state','State / province',addr.state)}${field('p_country','Country',addr.country)}
+ <div class="profile-group">Education & eligibility</div>${field('p_school','School *',ed.school)}${field('p_degree','Degree *',ed.degree)}${field('p_major','Major *',ed.major)}${field('p_grad','Graduation (YYYY-MM) *',ed.graduation_date)}${field('p_gpa','GPA (optional)',ed.gpa,'number')}${tri('p_enrolled','Currently enrolled',ed.currently_enrolled)}${tri('p_authorized','Authorized to work in U.S. *',wa.authorized_us,false)}${tri('p_sponsor','Will need sponsorship *',wa.requires_sponsorship,false)}${tri('p_citizen','U.S. citizen',wa.us_citizen)}${tri('p_person','U.S. person / ITAR eligible',wa.us_person)}${tri('p_over18','At least 18',pref.over_18)}${tri('p_onsite','Willing to work onsite',pref.willing_onsite)}${tri('p_relocate','Willing to relocate',pref.willing_to_relocate)}${tri('p_duration','Available full internship',pref.available_full_duration)}${tri('p_experience','Prior internship/work experience',pref.has_prior_experience)}${field('p_employer','Current employer',pref.current_employer)}
+ <div class="profile-group">Voluntary demographics</div><div><label>EEO behavior</label><select id="p_demo_default"><option value="decline" ${dem.default!=='self_identify'?'selected':''}>Decline to self-identify</option><option value="self_identify" ${dem.default==='self_identify'?'selected':''}>Use answers below</option></select></div>${field('p_gender','Gender',dem.gender)}${field('p_race','Race',dem.race)}${field('p_ethnicity','Ethnicity',dem.ethnicity)}${field('p_veteran','Veteran status',dem.veteran)}${field('p_disability','Disability status',dem.disability)}
+ <div class="profile-group">AI essay handling</div><div><label>Generated essay answers</label><select id="p_trust"><option value="false" ${pref.trust_llm_answers!==true?'selected':''}>Review every draft</option><option value="true" ${pref.trust_llm_answers===true?'selected':''}>Fill automatically</option></select></div></div><div class="missing">${missing?.length?'Required before starting: '+E(missing.join(', ')):(p.verified?'Profile verified and ready.':'All required fields are present; save and verify below.')}</div><button class="go" onclick="saveProfile()">Save & verify profile</button><div class="editor-note">Race, gender, veteran status, and disability are voluntary. “Decline” is the default. Legal or unfamiliar questions still pause for you.</div>`;
+}
+async function saveProfile(){const val=id=>$(id).value.trim()||null,tri=id=>$(id).value===''?null:$(id).value==='true';const body={verify:true,identity:{first_name:val('p_first'),last_name:val('p_last'),email:val('p_email'),phone:val('p_phone'),pronouns:val('p_pronouns'),address:{city:val('p_city'),state:val('p_state'),country:val('p_country')}},education:{school:val('p_school'),degree:val('p_degree'),major:val('p_major'),graduation_date:val('p_grad'),gpa:val('p_gpa'),currently_enrolled:tri('p_enrolled')},work_authorization:{authorized_us:tri('p_authorized'),requires_sponsorship:tri('p_sponsor'),us_citizen:tri('p_citizen'),us_person:tri('p_person')},preferences:{over_18:tri('p_over18'),willing_onsite:tri('p_onsite'),willing_to_relocate:tri('p_relocate'),available_full_duration:tri('p_duration'),has_prior_experience:tri('p_experience'),current_employer:val('p_employer'),trust_llm_answers:tri('p_trust')},demographics:{default:val('p_demo_default'),gender:val('p_gender'),race:val('p_race'),ethnicity:val('p_ethnicity'),veteran:val('p_veteran'),disability:val('p_disability')}};const r=await api('/api/profile',body);if(r.error)alert(r.error+(r.missing?.length?'\nMissing: '+r.missing.join(', '):''));else alert('Profile saved and verified.');refresh()}
+async function uploadResumes(role){const input=$('resume_files');if(!input.files.length)return alert('Choose one or more PDF, DOCX, TXT, or LaTeX resumes first.');
+ const body=new FormData();[...input.files].forEach(f=>body.append('files',f));body.append('role',role);
+ const r=await fetch('/api/resumes',{method:'POST',body});const d=await r.json();if(!r.ok)return alert(d.error||'Upload failed');input.value='';refresh()}
+async function makePrimary(id){const r=await api('/api/resumes/'+encodeURIComponent(id)+'/primary',{});if(r.error)alert(r.error);refresh()}
+async function stopForRevert(){await api('/api/action/stop',{});for(let i=0;i<60;i++){const s=await api('/api/state');if(!s.running)return true;await new Promise(r=>setTimeout(r,1000))}alert('The worker is still stopping. Try again in a moment.');return false}
+async function revertPending(){if(!confirm('Stop the worker, clear every unanswered question, and reset all pending unsubmitted applications to Not Started? This cannot undo an external submission.'))return;if(!await stopForRevert())return;const r=await api('/api/jobs/revert-pending',{});if(r.error)return alert(r.error);alert(`Reverted ${r.reverted} application(s) and cleared ${r.questions_cleared} unanswered question(s).`);refresh()}
+async function revertJob(id){if(!confirm('Reset this local application and clear its unanswered questions? This cannot undo an external submission.'))return;if(!await stopForRevert())return;const r=await api('/api/jobs/'+encodeURIComponent(id)+'/revert',{});if(r.error)return alert(r.error);if(r.protected?.length)return alert('This application is protected because it may already have been submitted.');alert('Application reverted to Not Started.');view();refresh()}
+async function ans(k,i){const v=$('a'+i).value.trim();if(!v)return;const r=await api('/api/answer',{qkey:k,answer:v});if(r.equivalents_resolved)alert(`Also resolved ${r.equivalents_resolved} equivalent question variant${r.equivalents_resolved===1?'':'s'}.`);refresh()}
 async function view(){const s=$('vs').value;const r=await api('/api/jobs'+(s?'?status='+s:''));
- $('jobs').innerHTML='<tr><th>Company<th>Role<th>Platform<th>P<th>Status<th>Note</tr>'+r.map(j=>`<tr><td>${E(j.company)}<td><a href="${E(j.url)}" target="_blank">${E(j.title)}</a><td>${E(j.platform)}<td>${j.priority}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}</tr>`).join('')}
+ $('jobs').innerHTML='<tr><th>Company<th>Role<th>Platform<th>P<th>Status<th>Note<th>Action</tr>'+r.map(j=>`<tr><td>${E(j.company)}<td><a href="${E(j.url)}" target="_blank">${E(j.title)}</a><td>${E(j.platform)}<td>${j.priority}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}<td>${['APPLIED','ALREADY_APPLIED','UNCERTAIN'].includes(j.status)?'':`<button class="warn" onclick="revertJob('${E(j.id)}')">Revert</button>`}</tr>`).join('')}
 let loaded=false;
-async function save(){const g=k=>$('s_'+k);await api('/api/settings',{max_per_session:+g('max_per_session').value,priorities:g('priorities').value.split(',').map(Number),
- countries:g('countries').value.split(',').map(s=>s.trim()),poll_minutes:+g('poll_minutes').value,max_retries:+g('max_retries').value,headless:g('headless').value==='true'});alert('saved')}
+async function save(){const g=k=>$('s_'+k),body={max_per_session:+g('max_per_session').value,priorities:g('priorities').value.split(',').map(Number),
+ countries:g('countries').value.split(',').map(s=>s.trim()),poll_minutes:+g('poll_minutes').value,max_retries:+g('max_retries').value,headless:g('headless').value==='true',handoff:g('handoff').value};const r=await api('/api/settings',body);if(r.error)return alert(r.error);alert('saved');refresh()}
 async function refresh(){const s=await api('/api/state'),c=s.counts;
  $('sub').textContent=`worker ${s.running?'running':'not running'} · control: ${s.control} · profile ${s.profile_ok?'verified':'NOT verified ('+s.profile_missing.join(', ')+')'}`;
  $('now').textContent=s.current?'Processing: '+s.current:'Idle';
- $('live').innerHTML=`Submission mode: <b>${s.settings.live_submit?'LIVE (submits applications)':'DRY RUN (fills and checks, never submits)'}</b> `+
+ $('start').disabled=!s.profile_ok;renderProfile(s.profile,s.profile_missing);
+ const handoffLabel={always:'manual review; keep question and completed tabs open',fallback:'automatic, hand off if blocked',never:'automatic only'}[s.settings.handoff]||'automatic, hand off if blocked';
+ $('live').innerHTML=`Submission mode: <b>${s.settings.live_submit?'LIVE (submits applications)':'DRY RUN (agent never clicks Submit)'}</b> · ${handoffLabel} `+
   (s.settings.live_submit?`<button class="warn" onclick="live(false)">Switch to dry run</button>`:`<button onclick="if(confirm('Enable live submissions? ${s.dryrun_ok} dry-run jobs will be queued.'))live(true)">Enable live submission</button>`)+` &nbsp; dry-run passed: ${s.dryrun_ok}`;
+ renderEditor(s.resume_editor);
+ $('resumes').innerHTML=s.resumes.length?s.resumes.map(r=>`<div class="resume-row"><span class="resume-name">${E(r.name)}</span><span class="pill">${E(r.role)}</span><span class="pill">${E(r.format||r.source)}</span>${r.source==='upload'&&r.role!=='primary'?`<button onclick="makePrimary('${E(r.id)}')">Make primary</button>`:''}</div>`).join(''):'<div class="sub">No resume configured yet.</div>';
  const cells=[['Total found',s.total],['Eligible',s.eligible],['Applied',c.APPLIED],['Already applied',c.ALREADY_APPLIED],['Failed',c.FAILED],['Ready: click submit',c.READY_TO_SUBMIT],['Needs input',c.NEEDS_USER_INPUT],['Blocked',c.BLOCKED],['Uncertain',c.UNCERTAIN],['Remaining',s.remaining],['Apps / hour',s.per_hour]];
  $('grid').innerHTML=cells.map(([a,b])=>`<div class="stat"><b>${b}</b><span>${a}</span></div>`).join('');
  $('latest').innerHTML='<tr><th>Time<th>Company<th>Role<th>Status<th>Note</tr>'+s.latest.map(j=>`<tr><td>${E(j.t)}<td>${E(j.company)}<td>${E(j.title)}<td class="st ${j.status}">${j.status}<td>${E(j.status_reason)}</tr>`).join('');
@@ -61,7 +117,8 @@ async function refresh(){const s=await api('/api/state'),c=s.counts;
  if(!loaded){loaded=true;$('vs').innerHTML+=Object.keys(c).map(k=>`<option>${k}</option>`).join('');
   const f=(k,l,v)=>`<div><label>${l}</label><input id="s_${k}" value="${E(v)}"></div>`;
   $('set').innerHTML=f('max_per_session','Max applications per session',s.settings.max_per_session)+f('priorities','Priority tiers (1,2,3)',s.settings.priorities)+f('countries','Countries',s.settings.countries)+
-   f('poll_minutes','New-job check interval (min)',s.settings.poll_minutes)+f('max_retries','Retry limit',s.settings.max_retries)+`<div><label>Browser visible</label><select id="s_headless"><option value="false" ${s.settings.headless?'':'selected'}>Visible</option><option value="true" ${s.settings.headless?'selected':''}>Hidden</option></select></div>`;}
+   f('poll_minutes','New-job check interval (min)',s.settings.poll_minutes)+f('max_retries','Retry limit',s.settings.max_retries)+`<div><label>Final submission behavior</label><select id="s_handoff" onchange="if(this.value==='always')$('s_headless').value='false'"><option value="always" ${s.settings.handoff==='always'?'selected':''}>Manual review — keep blocked and completed tabs open</option><option value="fallback" ${!s.settings.handoff||s.settings.handoff==='fallback'?'selected':''}>Auto-submit — hand off if blocked</option><option value="never" ${s.settings.handoff==='never'?'selected':''}>Auto-submit only</option></select></div><div><label>Browser visible</label><select id="s_headless"><option value="false" ${s.settings.headless?'':'selected'}>Visible</option><option value="true" ${s.settings.headless?'selected':''}>Hidden</option></select></div>`;}
  $('ev').innerHTML=s.events.map(e=>`<tr><td>${E(e.t)}<td>${E(e.msg)}</tr>`).join('')}
+const authParams=new URLSearchParams(location.search);if(authParams.get('chatgpt_error'))alert('ChatGPT connection failed: '+authParams.get('chatgpt_error'));else if(authParams.get('chatgpt'))alert('ChatGPT plan connected.'+(authParams.get('chatgpt_model_error')?' Refresh the model list: '+authParams.get('chatgpt_model_error'):''));if(location.search)history.replaceState({},'',location.pathname);
 refresh();setInterval(refresh,4000);
 </script></body></html>

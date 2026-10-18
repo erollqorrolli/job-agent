@@ -25,6 +25,14 @@ def test_simple_dry_run_fills_without_submitting(page, db, site, profile):
     assert page.input_value("#hx") == "Decline To Self Identify"  # combobox + container label
 
 
+def test_saved_latino_ethnicity_fills_yes_on_real_combobox(page, db, site, profile):
+    profile["demographics"] = {"default": "self_identify", "gender": "Male",
+                               "race": "Hispanic/Latino", "ethnicity": "Hispanic/Latino"}
+    out = run(page, db, site, "simple.html", handoff="always")
+    assert out.status == "READY_TO_SUBMIT"
+    assert page.input_value("#hx") == "Yes"
+
+
 def test_simple_live_submit_confirms(page, db, site, profile):
     out = run(page, db, site, "simple.html", live=True)
     assert out.status == "APPLIED", out
@@ -86,7 +94,8 @@ def test_bad_voice_answer_rejected(page, db, site, profile):
 def test_live_requires_verified_profile(page, db, site, profile):
     profile["verified"] = False
     out = run(page, db, site, "simple.html", live=True)
-    assert out.reason == "DRYRUN_OK"
+    assert out.status == "NEEDS_USER_INPUT"
+    assert out.reason == "complete and verify the applicant profile before processing"
 
 
 def test_unreviewed_model_text_becomes_draft_and_approval_is_job_scoped(page, db, site, profile):
@@ -117,33 +126,79 @@ def test_ashby_style_buttons_autofill_widget_and_submit_selector(page, db, site,
     assert page.input_value("#n") == "Test Student"                 # full-name rule; autofill widget left alone
 
 
-def test_tailored_resume_is_uploaded_and_first_ones_need_review(page, db, site, profile, tmp_path):
-    from docx import Document
-    from tests.test_tailor import make
-    src = tmp_path / "base.docx"; make(src)
-    profile["resumes"][0]["docx"] = str(src)
-    db.kv_set("skills", {"Redis": "used", "Python": "used"})
+def test_non_latex_resume_is_uploaded_unchanged(page, db, site, profile):
     job = make_job(db, f"{site}/simple.html")
     cfg = {"live_submit": False, "tailor_min_chars": 10, "tailor_review_first": 1}
     out = process(page, db, cfg, job, answer_chat=GOOD)
-    assert out.status == "NEEDS_USER_INPUT" and "tailored resume" in out.reason       # first one waits for the user
-    need = db.q("SELECT * FROM human_queue WHERE kind='resume'")[0]
-    db.resolve_need(need["qkey"], "ok")
-    out = process(page, db, cfg, db.q("SELECT * FROM jobs")[0], answer_chat=GOOD)
     assert out.reason == "DRYRUN_OK", out
-    assert page.evaluate("document.querySelector('#rs').files[0].name") .startswith("Test_Student_Resume.")
+    assert page.evaluate("document.querySelector('#rs').files[0].name") == "resume.pdf"
+    assert not db.q("SELECT * FROM human_queue WHERE kind='resume'")
 
 
-def test_review_queue_is_capped(page, db, site, profile, tmp_path):
-    from tests.test_tailor import make
-    src = tmp_path / "base.docx"; make(src)
-    profile["resumes"][0]["docx"] = str(src)
-    db.kv_set("skills", {"Redis": "used"})
+def test_review_queue_is_capped(page, db, site, profile, tmp_path, monkeypatch):
+    from pathlib import Path
+    from jobagent import runner
+
+    src = tmp_path / "base.tex"
+    src.write_text("\\documentclass{article}\\begin{document}\\section{Skills}Languages: Python\\section{Projects}\\item Built scheduler\\end{document}")
+    profile["resumes"][0]["tex"] = str(src)
+
+    def fake_editor(cfg, profile, job, job_text, sources, out):
+        pdf = Path(out).with_suffix(".pdf")
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(b"%PDF-tailored")
+        return pdf, {"mode": "paid-latex", "provider": "test", "model": "test", "source_count": len(sources),
+                     "keywords": ["Python"], "edits": 1, "format_preserved": True,
+                     "decision": "change", "model_decision": "change",
+                     "decision_reason": "Reworded a project bullet around Python.", "sections": ["projects"]}
+
+    monkeypatch.setattr(runner, "paid_editor_configured", lambda cfg: True)
+    monkeypatch.setattr(runner, "tailor_with_paid_editor", fake_editor)
     cfg = {"live_submit": False, "tailor_min_chars": 10, "tailor_review_first": 2}
     outs = [process(page, db, cfg, make_job(db, f"{site}/simple.html", jid=f"j{i}"), answer_chat=GOOD) for i in range(4)]
     assert [o.reason for o in outs[:2]] == ["tailored resume awaiting your review"] * 2
     assert [o.reason for o in outs[2:]] == ["DEFER_REVIEW"] * 2
     assert db.q("SELECT COUNT(*) n FROM human_queue WHERE kind='resume'")[0]["n"] == 2
+
+
+def test_manual_review_fills_form_while_resume_review_remains_available(page, db, site, profile, tmp_path, monkeypatch):
+    from pathlib import Path
+    from jobagent import runner
+
+    src = tmp_path / "base.tex"
+    src.write_text("\\documentclass{article}\\begin{document}\\section{Skills}Python\\end{document}")
+    profile["resumes"][0]["tex"] = str(src)
+
+    def fake_editor(cfg, profile, job, job_text, sources, out):
+        pdf = Path(out).with_suffix(".pdf")
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(b"%PDF-tailored")
+        return pdf, {"provider": "test", "model": "test", "keywords": ["Python"], "edits": 1,
+                     "decision": "change", "decision_reason": "Relevant wording.", "sections": ["skills"]}
+
+    monkeypatch.setattr(runner, "paid_editor_configured", lambda cfg: True)
+    monkeypatch.setattr(runner, "tailor_with_paid_editor", fake_editor)
+    job = make_job(db, f"{site}/simple.html", jid="manual-resume")
+    out = process(page, db, {"live_submit": False, "tailor_min_chars": 10,
+                             "handoff": "always", "headless": False}, job, answer_chat=GOOD)
+
+    assert out.status == "READY_TO_SUBMIT" and out.keep_page
+    assert page.input_value("#em") == "test@example.com"
+    assert db.q("SELECT 1 FROM human_queue WHERE job_id=? AND kind='resume' AND resolved_at IS NULL",
+                (job["id"],))
+
+
+def test_manual_mode_requeues_existing_resume_only_waits(db):
+    from jobagent.worker import requeue_manual_resume_reviews
+
+    job = make_job(db, "https://example.test/job", jid="resume-wait")
+    db.update(job["id"], status="NEEDS_USER_INPUT", status_reason="tailored resume awaiting your review")
+    db.add_need(job["id"], "resume@resume-wait", "Review tailored resume", "resume", ["resume.pdf"])
+
+    assert requeue_manual_resume_reviews(db, {"handoff": "always", "headless": False}) == 1
+    row = db.q("SELECT status,status_reason FROM jobs WHERE id=?", (job["id"],))[0]
+    assert row["status"] == "NOT_STARTED"
+    assert "manual final review" in row["status_reason"]
 
 
 def test_silent_submit_with_antibot_widget_falls_back_to_handoff(page, db, site, profile):
@@ -162,9 +217,29 @@ def test_handoff_leaves_tab_open_and_detects_the_users_click(page, db, site, pro
     n = len(SUBMITS)
     assert len(SUBMITS) == n and page.input_value("#em") == "test@example.com"    # filled, not submitted
     ready = {job["id"]: (page, job)}
+    db.add_need(job["id"], "manual-file", "Upload supporting document", "file", [])
     poll_ready(db, ready, log=lambda *a: None)
     assert job["id"] in ready                                                      # no confirmation yet: keep waiting
     page.click("button:has-text('Submit Application')")                            # the human click
     page.wait_for_timeout(500)
     poll_ready(db, ready, log=lambda *a: None)
     assert not ready and db.q("SELECT status FROM jobs")[0]["status"] == "APPLIED"
+    assert not db.q("SELECT 1 FROM human_queue WHERE job_id=? AND resolved_at IS NULL", (job["id"],))
+
+
+def test_manual_review_keeps_unanswered_and_dry_run_tabs_open(page, db, site, profile):
+    unanswered = run(page, db, site, "unknown_q.html", live=False, handoff="always")
+    assert unanswered.status == "NEEDS_USER_INPUT" and unanswered.keep_page and not page.is_closed()
+
+    db.x("DELETE FROM jobs")
+    db.x("DELETE FROM human_queue")
+    completed = run(page, db, site, "simple.html", live=False, handoff="always")
+    assert completed.status == "READY_TO_SUBMIT" and completed.keep_page
+    assert "only you can click Submit" in completed.reason
+
+
+def test_generic_upload_button_uses_surrounding_document_label(page, db, site, profile):
+    outcome = run(page, db, site, "generic_file_label.html", live=False, handoff="always")
+    assert outcome.status == "NEEDS_USER_INPUT" and outcome.keep_page
+    questions = [row["question"] for row in db.q("SELECT question FROM human_queue")]
+    assert questions == ["Document required: Undergraduate Transcript *"]

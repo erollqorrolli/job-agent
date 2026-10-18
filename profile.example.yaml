@@ -2,21 +2,21 @@
 # Anything left null is NEVER guessed; the agent asks you in the dashboard instead.
 verified: false
 identity:
-  first_name: Jane
-  last_name: Doe
-  email: jane@example.edu
+  first_name: null
+  last_name: null
+  email: null
   phone: null
   pronouns: null
-  address: {line1: null, city: Springfield, state: IL, zip: null, country: United States}
+  address: {line1: null, city: null, state: null, zip: null, country: United States}
 links: {linkedin: null, github: null, portfolio: null}
 education:
-  school: Example University
-  degree: Bachelor of Science in Engineering
+  school: null
+  degree: null
   currently_enrolled: null
   degree_level: "Bachelor's"
-  major: Computer Science
+  major: null
   start_date: null               # e.g. "2024-09"; asked on forms with start/end dates
-  graduation_date: "2028-05"   # month/year
+  graduation_date: null         # e.g. "2028-05"; month/year
   gpa: null                     # leave null to decline GPA fields (they go to your queue if required)
 work_authorization:
   authorized_us: null           # true/false; REQUIRED, legal answer, never guessed
@@ -39,8 +39,14 @@ preferences:
   previously_worked_for_companies: []   # company names; anything else answers "No"
 demographics:                   # voluntary EEO. Default is to decline everything.
   default: decline
-resumes:                        # first is default; tags pick by role category
-  - {path: null, tags: [default]}
+  gender: null                  # used only when default is self_identify
+  race: null
+  ethnicity: null
+  veteran: null
+  disability: null
+resumes:                        # first is primary; later entries are supplementary context
+  - {path: null, tex: null, tags: [default]}  # path=PDF to submit; tex=self-contained LaTeX source for format-safe premium edits
+  # - {path: /path/to/older_resume.pdf, tags: [supplementary]}
 # Facts the answer writer is allowed to use. Real things only.
 facts:
   projects: []        # - "short real description"

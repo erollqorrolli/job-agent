@@ -1,13 +1,17 @@
 """Process one job: open, fill (multi-step), verify, submit (only if allowed), confirm."""
-import json, re, time
+import json, re, shutil, time
 from dataclasses import dataclass, field
+from pathlib import Path
 from . import detect, fields
 from .adapters import adapter_for
-from .answers import write_answer, llm_configured, pick_grounded, CFG_FOR_CHOICE
+from .answers import (write_answer, llm_configured, pick_grounded, semantic_question_match,
+                      CFG_FOR_CHOICE)
 from .config import SHOTS
 from .profile import load_profile, get, verified, norm_key
 from .config import DATA
-from .tailor import tailor_fit
+from .premium_resume import (call_paid_grounded_choice, paid_editor_configured, source_signature,
+                             tailor_with_paid_editor, write_premium_answer)
+from .resume_sources import resume_inventory
 
 MAX_STEPS = 10
 
@@ -24,44 +28,124 @@ class Outcome:
 
 
 class Ctx:
-    def __init__(self, db, cfg, profile, resume_path, answer_fn, job_id=None):
+    def __init__(self, db, cfg, profile, resume_path, answer_fn, job_id=None, job_text=""):
         self.job_id = job_id
         self.db, self.cfg, self.profile, self.resume_path, self.answer_fn = db, cfg, profile, resume_path, answer_fn
+        self.job_text = job_text
+        self.question_keys = {}
 
 
-def pick_resume(profile, category):
-    rs = profile.get("resumes") or []
+def pick_resume(profile, category, db=None):
+    rs = resume_inventory(db, profile) if db is not None else profile.get("resumes") or []
     tag = {"AI/ML/Data": ("ml", "ai", "data"), "Software": ("swe", "software"), "Quant": ("quant",)}.get(category, ())
     for r in rs:
-        if r.get("path") and any(t in (r.get("tags") or []) for t in tag):
+        if r.get("role", "primary") == "primary" and r.get("path") and any(t in (r.get("tags") or []) for t in tag):
             return r["path"]
     for r in rs:
-        if r.get("path"):
+        if r.get("role", "primary") == "primary" and r.get("path"):
             return r["path"]
     return None
 
 
+def _resume_basename(source: dict, actual_path: str | Path) -> str:
+    """Return the original human filename with the actual submission suffix."""
+    actual = Path(actual_path)
+    original = Path(str(source.get("name") or actual.name)).name
+    stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", Path(original).stem).strip(" ._") or "resume"
+    return stem + actual.suffix.lower()
+
+
+def stage_resume_for_job(sources: list[dict], job: dict, resume_path: str | None) -> str | None:
+    """Give browser uploads a clean filename while internal source paths stay unique."""
+    if not resume_path:
+        return None
+    source_path = Path(resume_path)
+    source = next((item for item in sources
+                   if Path(item.get("path", "")) == source_path), {})
+    destination = DATA / "resumes" / job["id"][:8] / _resume_basename(source, source_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.resolve() != destination.resolve():
+        shutil.copy2(source_path, destination)
+    return str(destination)
+
+
+def resume_decision_event(job, info):
+    """Concise, explicit premium-model decision for the dashboard event stream."""
+    edits = int(info.get("edits") or 0)
+    decision = "CHANGE" if edits else "NO CHANGE"
+    model_decision = str(info.get("model_decision") or info.get("decision") or "").replace("_", " ").upper()
+    reason = " ".join(str(info.get("decision_reason") or "").split())[:180]
+    sections = ", ".join(info.get("sections") or []) or "none"
+    keywords = ", ".join(str(x) for x in (info.get("keywords") or [])[:8]) or "none"
+    company = " ".join(str(job.get("company") or "").split())[:60]
+    title = " ".join(str(job.get("title") or "").split())[:80]
+    model_note = f" (model: {model_decision})" if model_decision and model_decision != decision else ""
+    tokens = (f"; tokens={info.get('input_tokens')} in/{info.get('output_tokens')} out"
+              if info.get("input_tokens") is not None else "")
+    return (f"resume decision for {company} - {title}: {decision}{model_note}; "
+            f"reason={reason or 'not provided'}; accepted edits={edits}; sections={sections}; "
+            f"ATS keywords={keywords}; model={info.get('provider', 'model')}/{info.get('model', 'unknown')}{tokens}")
+
+
 def maybe_tailor(db, cfg, profile, job, job_text, default_path):
-    """Returns (path_to_upload, Outcome|None). Outcome is set when the user must review a tailored resume first."""
-    docx = next((r.get("docx") for r in profile.get("resumes") or [] if r.get("docx")), None)
-    bank = db.kv_get("skills") or {}
-    if not cfg.get("tailor_resume", True) or not docx or not bank or len(job_text) < cfg.get("tailor_min_chars", 200):
+    """Tailor only a primary LaTeX source, preserving its structure locally."""
+    sources = resume_inventory(db, profile)
+    if not cfg.get("tailor_resume", True) or len(job_text) < cfg.get("tailor_min_chars", 200):
         return default_path, None
-    ident = profile.get("identity", {})
-    out = DATA / "resumes" / job["id"][:8] / f"{ident.get('first_name','')}_{ident.get('last_name','')}_Resume.docx"
-    try:
-        out, info = tailor_fit(docx, job_text, bank, out)
-    except Exception as e:
-        db.log(job["id"], f"tailor failed, using default resume: {e}")
+    primary = next((x for x in sources if x.get("role") == "primary"
+                    and Path(x.get("context_path") or x.get("path", "")).suffix.lower() == ".tex"), None)
+    template = Path(primary.get("context_path") or primary.get("path", "")) if primary else None
+    if not template or not template.is_file():
+        marker = "resume tailoring unavailable: primary resume is not an editable LaTeX (.tex) source"
+        if not db.q("SELECT 1 FROM events WHERE job_id=? AND msg LIKE ? LIMIT 1",
+                    (job["id"], marker + "%")):
+            db.log(job["id"], marker + "; original resume will be used unchanged until a .tex primary is uploaded")
+        return default_path, None
+    if not paid_editor_configured(cfg):
+        marker = "resume tailoring unavailable: premium model is not connected"
+        if not db.q("SELECT 1 FROM events WHERE job_id=? AND msg LIKE ? LIMIT 1",
+                    (job["id"], marker + "%")):
+            db.log(job["id"], marker + "; original resume will be used unchanged")
+        return default_path, None
+
+    clean_stem = Path(_resume_basename(primary or {}, template)).stem
+    out = DATA / "resumes" / job["id"][:8] / f"{clean_stem}.tex"
+    sig = source_signature(cfg, job_text, sources, profile)
+    cached = db.kv_get(f"paid_resume@{job['id']}") or {}
+    cached_path = Path(cached.get("path", ""))
+    if cached.get("signature") == sig and cached_path.is_file():
+        clean_cached = out.with_suffix(cached_path.suffix)
+        if cached_path.resolve() != clean_cached.resolve():
+            clean_cached.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(cached_path, clean_cached)
+            cached_path = clean_cached
+            db.kv_set(f"paid_resume@{job['id']}", {**cached, "path": str(cached_path)})
+        out, info = cached_path, cached.get("info") or {"mode": "paid-latex", "model": "cached"}
+    else:
+        try:
+            out, info = tailor_with_paid_editor(cfg, profile, job, job_text, sources, out)
+            db.kv_set(f"paid_resume@{job['id']}", {"signature": sig, "path": str(out), "info": info})
+            db.log(job["id"], resume_decision_event(job, info))
+        except Exception as e:
+            db.log(job["id"], f"resume decision for {job.get('company', '')} - {job.get('title', '')}: ERROR; "
+                                 f"primary resume left unchanged because the premium editor failed: {str(e)[:260]}")
+            return default_path, None
+    if int(info.get("edits") or 0) == 0:
         return default_path, None
     key = f"resume@{job['id']}"
-    approved = db.q("SELECT COUNT(*) n FROM answers WHERE qkey LIKE 'resume@%'")[0]["n"]
-    limit = cfg.get("tailor_review_first", 5)
-    if approved < limit and db.get_answer(key) is None:
+    if db.get_answer(key) is None:
+        limit = max(1, int(cfg.get("tailor_review_queue_limit", cfg.get("tailor_review_first", 5))))
         pending = db.q("SELECT COUNT(*) n FROM human_queue WHERE kind='resume' AND resolved_at IS NULL AND job_id!=?", (job["id"],))[0]["n"]
-        if approved + pending >= limit:     # enough reviews already waiting; hold this job instead of flooding the queue
+        if pending >= limit:     # hold excess jobs rather than flooding the user's mandatory review queue
             return str(out), Outcome("NOT_STARTED", "DEFER_REVIEW")
-        summary = f"added: {', '.join(info['added_used'] + info['added_course']) or 'nothing'}; projects reordered: {info['reordered']}"
+        usage = ""
+        if info.get("input_tokens") is not None:
+            usage = f"; tokens: {info.get('input_tokens')} in / {info.get('output_tokens')} out"
+        summary = (f"premium LaTeX editor: {info.get('provider', 'model')} / {info.get('model')}; "
+                   f"format-safe non-Education edits: {info.get('edits', 0)}; "
+                   f"sections: {', '.join(info.get('sections') or []) or 'not reported'}; "
+                   f"reason: {info.get('decision_reason') or 'not provided'}; format preserved; "
+                   f"ATS keywords: {', '.join(info.get('keywords') or []) or 'none'}{usage}")
         db.add_need(job["id"], key, f"Review tailored resume for {job['company']} - {job['title']}", "resume", [str(out), summary])
         return str(out), Outcome("NEEDS_USER_INPUT", "tailored resume awaiting your review")
     return str(out), None
@@ -136,7 +220,13 @@ def reach_form(page, adapter):
 
 def process(page, db, cfg, job, answer_chat=None) -> Outcome:
     profile = load_profile()
-    live = bool(cfg.get("live_submit")) and verified(profile)
+    sources = resume_inventory(db, profile)
+    default_resume = stage_resume_for_job(
+        sources, job, pick_resume(profile, job.get("category"), db))
+    if not verified(profile, has_resume=bool(default_resume)):
+        return Outcome("NEEDS_USER_INPUT", "complete and verify the applicant profile before processing")
+    live = bool(cfg.get("live_submit"))
+    keep_for_review = cfg.get("handoff", "fallback") == "always" and not cfg.get("headless", False)
     adapter = adapter_for(job["platform"])
     early = open_job(page, job, adapter)
     if early:
@@ -146,25 +236,59 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
     if detect.login_wall(page):
         db.add_need(job["id"], norm_key(f"account:{adapter.name}:{job['url_key'].split('/')[0]}"),
                     f"{job['company']} needs sign-in / account on {adapter.name}. Sign in once via `python -m jobagent login`, then retry.", "account", [])
-        return Outcome("NEEDS_USER_INPUT", "account/sign-in required", evidence=shot(page, job, "login"))
+        return Outcome("NEEDS_USER_INPUT", "account/sign-in required", evidence=shot(page, job, "login"),
+                       keep_page=keep_for_review)
     page_text = detect.body_text(page)
-    resume_path = pick_resume(profile, job.get("category"))
+    resume_path = default_resume
     resume_path, review = maybe_tailor(db, cfg, profile, job, page_text, resume_path)
     if review:
         review.evidence = shot(page, job, "review")
-        return review
-    ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat) \
-        if (answer_chat or llm_configured()) else None
-    ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"])
+        if not keep_for_review or review.reason == "DEFER_REVIEW":
+            return review
+        # Manual handoff already guarantees that the user reviews the completed
+        # application before submitting it. Continue with the generated resume
+        # in the same pass so the employer tab is actually filled; its dashboard
+        # review remains available, and the final manual click is approval.
+        db.log(job["id"], "tailored resume ready for review; continuing to fill because manual website handoff is enabled")
+    if answer_chat:
+        ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat)
+    elif paid_editor_configured(cfg):
+        ans_fn = lambda q, limit=None: write_premium_answer(
+            cfg, profile, job, page_text, q, sources, limit,
+            event_fn=lambda msg: db.log(job["id"], msg))
+    elif llm_configured(cfg):
+        ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit)
+    else:
+        ans_fn = lambda q, limit=None: None
+    ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"], page_text)
     CFG_FOR_CHOICE[0] = cfg
-    if answer_chat or llm_configured():
+    if answer_chat or llm_configured(cfg):
         ctx.choice_fn = lambda q, opts: pick_grounded(cfg, q, opts, profile, chat=answer_chat)
+        ctx.reuse_fn = lambda q, kind, opts: semantic_question_match(cfg, db, q, kind, opts, chat=answer_chat)
+    elif paid_editor_configured(cfg):
+        def premium_choice(q, opts):
+            from .answers import facts_sheet
+            try:
+                result, usage = call_paid_grounded_choice(cfg, facts_sheet(profile), q, opts)
+            except Exception as exc:
+                db.log(job["id"], f"grounded field reasoner failed: {str(exc)[:220]}")
+                return None
+            # Reuse the same strict evidence and exact-option validator as the local model.
+            chat = lambda _system, _user: json.dumps(result)
+            picked = pick_grounded(cfg, q, opts, profile, chat=chat)
+            if picked is not None:
+                tokens = (f"; tokens={usage.get('input_tokens')} in/{usage.get('output_tokens')} out"
+                          if usage.get("input_tokens") is not None else "")
+                db.log(job["id"], f"premium grounded field inference accepted for: {' '.join(q.split())[:140]}{tokens}")
+            return picked
+        ctx.choice_fn = premium_choice
     asked = []
 
     for step in range(MAX_STEPS):
         if detect.has_captcha(page):
             db.add_need(job["id"], norm_key(f"captcha:{job['id']}"), f"CAPTCHA on {job['company']} - {job['title']}. Complete it in the browser.", "captcha", [])
-            return Outcome("BLOCKED", "captcha", evidence=shot(page, job, "captcha"), questions=asked)
+            return Outcome("BLOCKED", "captcha", evidence=shot(page, job, "captcha"), questions=asked,
+                           keep_page=keep_for_review)
         flds = page.evaluate(fields.SCAN_JS)
         needs, filled = [], 0
         for f in sorted(flds, key=lambda x: x["kind"] == "file"):   # uploads last: some sites re-render on upload
@@ -194,8 +318,10 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                 if kind == "draft":   # job-specific: never reused for other companies
                     db.add_need(job["id"], norm_key(q) + "@" + job["id"], q, "draft", [need[2]])
                 else:
-                    db.add_need(job["id"], norm_key(q), q, kind, f.get("options"))
-            return Outcome("NEEDS_USER_INPUT", f"{len(needs)} unanswered", evidence=shot(page, job, "needs"), questions=asked)
+                    base_key = norm_key(q)
+                    db.add_need(job["id"], ctx.question_keys.get(base_key, base_key), q, kind, f.get("options"))
+            return Outcome("NEEDS_USER_INPUT", f"{len(needs)} unanswered", evidence=shot(page, job, "needs"),
+                           questions=asked, keep_page=keep_for_review)
 
         sub = adapter.find_submit(page)
         nxt = adapter.find_next(page) if not sub else None
@@ -204,6 +330,15 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
             if problems:
                 return Outcome("FAILED", "pre-submit check: " + "; ".join(problems)[:300], evidence=shot(page, job, "precheck"), questions=asked)
             if not live:
+                if keep_for_review:
+                    try:
+                        page.bring_to_front()
+                        sub.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
+                    return Outcome("READY_TO_SUBMIT", "dry-run form filled: review the open tab; only you can click Submit",
+                                   evidence=shot(page, job, "ready"), resume=resume_path or "", questions=asked,
+                                   keep_page=True)
                 return Outcome("NOT_STARTED", "DRYRUN_OK", evidence=shot(page, job, "dryrun"), resume=resume_path or "", questions=asked)
             if cfg.get("handoff", "fallback") == "always":   # the human makes the final click; invisible reCAPTCHA rejects automated ones
                 try:
