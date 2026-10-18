@@ -44,6 +44,7 @@ def launch(pw, cfg):
     if ext:
         args += [f"--disable-extensions-except={ext}", f"--load-extension={ext}"]
     return pw.chromium.launch_persistent_context(str(ROOT / cfg.get("browser_profile", "browser_profile")),
+                                                 channel=cfg.get("browser_channel", "chrome"),
                                                  headless=cfg.get("headless", False), args=args,
                                                  viewport={"width": 1280, "height": 900})
 
