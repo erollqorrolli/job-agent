@@ -1,4 +1,4 @@
-import json, os, secrets, signal, subprocess, sys, time, uuid
+import json, os, re, secrets, shutil, signal, subprocess, sys, time, uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from flask import Flask, jsonify, redirect, request, Response
@@ -15,7 +15,7 @@ from .provider_auth import (CHATGPT_USAGE_URL, begin_chatgpt_sign_in, clear_gemi
                             complete_chatgpt_sign_in, disconnect_chatgpt,
                             refresh_chatgpt_models, save_gemini_key, validate_gemini_key)
 from .resume_sources import (add_uploaded_sources, public_inventory, resume_inventory,
-                             set_primary)
+                             remove_uploaded_source, set_primary)
 from .answers import llm_configured, semantic_equivalent_pending_keys
 
 app = Flask(__name__)
@@ -402,3 +402,39 @@ def resumes_primary(source_id):
     if not set_primary(db, source_id):
         return jsonify(error="uploaded resume not found"), 404
     return jsonify(ok=True, resumes=public_inventory(db, load_profile()))
+
+
+def _remove_uploaded_resume_files(source_id: str) -> int:
+    """Delete only files stored under a server-generated resume-source ID."""
+    if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+        raise ValueError("invalid uploaded resume ID")
+    root = (DATA / "resume_sources").resolve()
+    targets = []
+    source_dir = root / source_id
+    if source_dir.exists() or source_dir.is_symlink():
+        targets.append(source_dir)
+    if root.exists():
+        targets.extend(root.glob(f"{source_id}_*"))  # legacy flat-file upload layout
+    for target in targets:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+    return len(targets)
+
+
+@app.delete("/api/resumes/<source_id>")
+def resumes_remove(source_id):
+    if proc_alive():
+        return jsonify(error="stop the worker before removing a resume"), 409
+    items = db.kv_get("resume_sources", []) or []
+    record = next((item for item in items if item.get("id") == source_id), None)
+    if not record:
+        return jsonify(error="uploaded resume not found"), 404
+    try:
+        files_removed = _remove_uploaded_resume_files(source_id)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"could not remove uploaded resume: {exc}"), 400
+    remove_uploaded_source(db, source_id)
+    return jsonify(ok=True, removed=record.get("name"), files_removed=files_removed,
+                   resumes=public_inventory(db, load_profile()))

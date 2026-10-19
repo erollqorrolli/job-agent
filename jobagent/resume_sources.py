@@ -94,3 +94,13 @@ def set_primary(db, source_id: str) -> bool:
         item["role"] = "primary" if item.get("id") == source_id else "supplementary"
     db.kv_set("resume_sources", items)
     return True
+
+
+def remove_uploaded_source(db, source_id: str) -> dict | None:
+    """Remove one dashboard-uploaded source from the inventory and return its metadata."""
+    items = db.kv_get("resume_sources", []) or []
+    removed = next((item for item in items if item.get("id") == source_id), None)
+    if not removed:
+        return None
+    db.kv_set("resume_sources", [item for item in items if item.get("id") != source_id])
+    return removed

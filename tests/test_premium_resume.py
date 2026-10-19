@@ -8,7 +8,8 @@ from docx import Document
 from jobagent.premium_resume import (apply_latex_edits, call_paid_latex_editor,
                                      prepare_latex_packet, prepare_packet,
                                      write_premium_answer)
-from jobagent.resume_sources import add_uploaded_sources, resume_inventory, set_primary
+from jobagent.resume_sources import (add_uploaded_sources, remove_uploaded_source,
+                                     resume_inventory, set_primary)
 
 
 def _docx(path, *lines):
@@ -97,6 +98,83 @@ def test_dashboard_accepts_latex_as_primary_and_keeps_source_for_editing(db, tmp
     private = resume_inventory(db, {})[0]
     assert Path(private["path"]).name == "resume.pdf"
     assert Path(private["context_path"]).name == "resume.tex"
+
+
+def test_dashboard_removes_uploaded_resume_and_promotes_next_source(db, tmp_path, monkeypatch):
+    from jobagent import dashboard
+
+    monkeypatch.setattr(dashboard, "db", db)
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+    monkeypatch.setattr(dashboard, "load_profile", lambda: {})
+    client = dashboard.app.test_client()
+    uploaded = client.post("/api/resumes", data={
+        "role": "primary",
+        "files": [(io.BytesIO(b"%PDF-main"), "main.pdf"),
+                  (io.BytesIO(b"%PDF-backup"), "backup.pdf")],
+    }, content_type="multipart/form-data").get_json()["resumes"]
+    primary = next(item for item in uploaded if item["role"] == "primary")
+    source_dir = tmp_path / "resume_sources" / primary["id"]
+
+    response = client.delete(f"/api/resumes/{primary['id']}")
+
+    assert response.status_code == 200
+    assert response.get_json()["removed"] == "main.pdf"
+    assert not source_dir.exists()
+    remaining = response.get_json()["resumes"]
+    assert [(item["name"], item["role"]) for item in remaining] == [("backup.pdf", "primary")]
+    assert all(item["id"] != primary["id"] for item in db.kv_get("resume_sources"))
+
+
+def test_dashboard_removes_legacy_flat_resume_files(db, tmp_path, monkeypatch):
+    from jobagent import dashboard
+
+    source_id = "a" * 32
+    root = tmp_path / "resume_sources"
+    root.mkdir()
+    pdf = root / f"{source_id}_resume.pdf"
+    tex = root / f"{source_id}_resume.tex"
+    log = root / f"{source_id}_resume.log"
+    outside = tmp_path / "keep.pdf"
+    for path in (pdf, tex, log, outside):
+        path.write_bytes(b"content")
+    add_uploaded_sources(db, [{"id": source_id, "name": "resume.tex", "path": str(pdf),
+                               "context_path": str(tex), "format": "latex"}], "primary")
+    monkeypatch.setattr(dashboard, "db", db)
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+    monkeypatch.setattr(dashboard, "load_profile", lambda: {})
+
+    response = dashboard.app.test_client().delete(f"/api/resumes/{source_id}")
+
+    assert response.status_code == 200 and response.get_json()["files_removed"] == 3
+    assert not any((pdf.exists(), tex.exists(), log.exists()))
+    assert outside.exists()
+
+
+def test_dashboard_refuses_resume_removal_while_worker_is_running(db, tmp_path, monkeypatch):
+    from jobagent import dashboard
+
+    source_id = "b" * 32
+    source = tmp_path / "resume.pdf"
+    source.write_bytes(b"%PDF")
+    add_uploaded_sources(db, [{"id": source_id, "name": source.name, "path": str(source)}], "primary")
+    monkeypatch.setattr(dashboard, "db", db)
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+    monkeypatch.setattr(dashboard, "proc_alive", lambda: True)
+
+    response = dashboard.app.test_client().delete(f"/api/resumes/{source_id}")
+
+    assert response.status_code == 409
+    assert source.exists()
+    assert db.kv_get("resume_sources")[0]["id"] == source_id
+
+
+def test_remove_uploaded_source_does_not_remove_unknown_id(db, tmp_path):
+    source = tmp_path / "resume.pdf"
+    source.write_bytes(b"%PDF")
+    add_uploaded_sources(db, [{"id": "known", "name": source.name, "path": str(source)}], "primary")
+
+    assert remove_uploaded_source(db, "missing") is None
+    assert db.kv_get("resume_sources")[0]["id"] == "known"
 
 
 def test_submission_copy_uses_original_resume_name_not_internal_uuid(db, tmp_path, monkeypatch):
