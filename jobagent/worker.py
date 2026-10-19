@@ -45,6 +45,20 @@ def claim_job(db, job_id: str) -> bool:
     return cur.rowcount == 1
 
 
+def counts_toward_session(out: Outcome) -> bool:
+    """Count completed forms/submission attempts, not jobs parked for input."""
+    return (out.submitted or out.status == "READY_TO_SUBMIT" or
+            (out.status == "NOT_STARTED" and out.reason == "DRYRUN_OK"))
+
+
+def session_limit_reached(attempted: int, completed: int, once_limit, cfg: dict) -> bool:
+    """CLI limits cap attempts; the persistent worker caps completed applications."""
+    if once_limit is not None:
+        return attempted >= once_limit
+    limit = cfg.get("max_per_session", 50)
+    return limit > 0 and completed >= limit
+
+
 def launch(pw, cfg):
     args = []
     ext = cfg.get("extension_path")
@@ -78,7 +92,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
     db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='IN_PROGRESS'")  # crash/restart recovery
     db.kv_set("control", "run")
     db.kv_set("current", None)
-    done, tried, host_last = 0, set(), {}
+    attempted, completed, tried, host_last = 0, 0, set(), {}
     ready = {}    # job id -> (page, job, held status) kept open for review or the user's Submit click
     db.x("UPDATE jobs SET status='NOT_STARTED' WHERE status='READY_TO_SUBMIT'")   # tabs from a previous run are gone
     requeue_manual_resume_reviews(db, {**effective_cfg(db), **(override or {})})
@@ -101,13 +115,13 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                 except Exception as e:
                     log("ingest failed", e)
                     db.kv_set("last_ingest", time.time() - cfg.get("poll_minutes", 120) * 60 + 600)
-            if done >= (once_limit or cfg.get("max_per_session", 50)):
+            if session_limit_reached(attempted, completed, once_limit, cfg):
                 if ready:
                     db.kv_set("control", "pause")
-                    db.kv_set("current", f"session limit reached; {len(ready)} review tab(s) kept open")
-                    log("session limit reached; paused with review tabs open")
+                    db.kv_set("current", f"completed-application limit reached; {len(ready)} review tab(s) kept open")
+                    log("completed-application limit reached; paused with review tabs open")
                     continue
-                log("session limit reached"); break
+                log("completed-application limit reached"); break
             poll_ready(db, ready, log)
             if len(ready) >= cfg.get("max_ready_tabs", 20):  # don't pile up unlimited tabs; keep polling until some are submitted
                 db.kv_set("current", f"{len(ready)} forms waiting for review in the browser tabs")
@@ -158,9 +172,9 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
             if getattr(out, "keep_page", False):
                 ready[job["id"]] = (page, job, out.status)
             tried.add(job["id"])
-            # the session cap counts real submissions in live mode; jobs parked for your input don't use it up
-            if not cfg.get("live_submit") or out.submitted:
-                done += 1
+            attempted += 1
+            if counts_toward_session(out):
+                completed += 1
             log(f"{out.status:18} {job['company'][:24]:24} {job['title'][:40]:40} {out.reason}")
             if out.status == "NEEDS_USER_INPUT":
                 notify(f"Input needed: {job['company']}")
@@ -175,7 +189,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
         except Exception:
             pass
         pw.stop()
-    return done
+    return attempted
 
 
 def poll_ready(db, ready: dict, log=print):
