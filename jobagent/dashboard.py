@@ -21,7 +21,8 @@ from .answers import llm_configured, semantic_equivalent_pending_keys
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 60 * 1024 * 1024
 db = DB()
-SETTINGS = ["max_per_session", "priorities", "countries", "excluded_keywords", "live_submit", "handoff", "poll_minutes", "headless", "max_retries"]
+SETTINGS = ["max_per_session", "max_ready_tabs", "priorities", "countries", "excluded_keywords",
+            "live_submit", "handoff", "poll_minutes", "headless", "max_retries"]
 HANDOFF_MODES = {"always", "fallback", "never"}
 
 
@@ -153,6 +154,8 @@ def settings():
         if k in SETTINGS and k != "live_submit":
             if k == "handoff" and v not in HANDOFF_MODES:
                 return jsonify(error="invalid handoff mode"), 400
+            if k == "max_ready_tabs" and (isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 100):
+                return jsonify(error="max review tabs must be a whole number from 1 to 100"), 400
             updates[k] = v
     candidate = {**effective_cfg(db), **updates}
     if candidate.get("handoff") == "always" and candidate.get("headless") is True:

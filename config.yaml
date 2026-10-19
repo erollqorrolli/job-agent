@@ -6,6 +6,7 @@ live_submit: false          # false = fill + validate + screenshot, never click 
 handoff: fallback           # always = you click Submit; fallback = auto then hand off if blocked; never = auto only
 headless: false             # headed lets you watch and solve CAPTCHAs
 max_per_session: 50
+max_ready_tabs: 20          # completed/question tabs kept open before the worker waits (1-100)
 max_retries: 3
 delay_seconds: [20, 45]     # randomized pause between applications (polite pacing)
 priorities: [1, 2, 3]       # which priority tiers to process

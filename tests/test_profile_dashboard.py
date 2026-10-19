@@ -118,6 +118,24 @@ def test_dashboard_saves_submission_handoff_mode(db, monkeypatch):
     assert "visible browser" in hidden.get_json()["error"]
 
 
+def test_dashboard_saves_and_validates_review_tab_limit(db, monkeypatch):
+    from jobagent import dashboard
+
+    monkeypatch.setattr(dashboard, "db", db)
+    client = dashboard.app.test_client()
+
+    assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 20
+    saved = client.post("/api/settings", json={"max_ready_tabs": 32})
+    assert saved.status_code == 200
+    assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 32
+
+    for invalid in (0, 101, 2.5, "20", True):
+        rejected = client.post("/api/settings", json={"max_ready_tabs": invalid})
+        assert rejected.status_code == 400
+        assert "whole number from 1 to 100" in rejected.get_json()["error"]
+    assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 32
+
+
 def test_answer_resolves_semantically_equivalent_existing_queue_items(db, monkeypatch):
     from jobagent import dashboard
 

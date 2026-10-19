@@ -102,7 +102,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                     continue
                 log("session limit reached"); break
             poll_ready(db, ready, log)
-            if len(ready) >= cfg.get("max_ready_tabs", 8):   # don't pile up unlimited tabs; keep polling until some are submitted
+            if len(ready) >= cfg.get("max_ready_tabs", 20):  # don't pile up unlimited tabs; keep polling until some are submitted
                 db.kv_set("current", f"{len(ready)} forms waiting for review in the browser tabs")
                 time.sleep(5); continue
             # jobs the user just answered are eligible again within this session
