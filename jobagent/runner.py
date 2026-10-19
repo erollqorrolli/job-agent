@@ -12,6 +12,8 @@ from .config import DATA
 from .premium_resume import (call_paid_grounded_choice, paid_editor_configured, source_signature,
                              tailor_with_paid_editor, write_premium_answer)
 from .resume_sources import resume_inventory
+from .resume_validation import (ResumeValidationError, browser_file_metadata,
+                                validate_resume_artifact, verify_browser_file)
 
 MAX_STEPS = 10
 
@@ -25,6 +27,8 @@ class Outcome:
     questions: list = field(default_factory=list)
     submitted: bool = False      # the final submit button was actually clicked (or handed to the user)
     keep_page: bool = False      # hand-off: leave the filled tab open for the user's click
+    resume_sha256: str = ""
+    resume_verification: dict = field(default_factory=dict)
 
 
 class Ctx:
@@ -33,6 +37,9 @@ class Ctx:
         self.db, self.cfg, self.profile, self.resume_path, self.answer_fn = db, cfg, profile, resume_path, answer_fn
         self.job_text = job_text
         self.question_keys = {}
+        self.resume_artifact = None
+        self.resume_uploads = {}
+        self.resume_verification = {}
 
 
 def pick_resume(profile, category, db=None):
@@ -181,6 +188,49 @@ def settle(page):
         pass
 
 
+def _verify_resume_at_checkpoint(page, ctx: Ctx) -> dict:
+    """Recheck any still-present inputs; retain an exact upload-time match across form steps."""
+    if not ctx.resume_artifact:
+        raise ResumeValidationError("resume artifact was not validated")
+    if not ctx.resume_uploads:
+        result = {
+            "status": "not-requested",
+            "name": ctx.resume_artifact.name,
+            "size": ctx.resume_artifact.size,
+            "sha256": ctx.resume_artifact.sha256,
+            "pages": ctx.resume_artifact.pages,
+            "extracted_chars": ctx.resume_artifact.extracted_chars,
+            "warnings": [*ctx.resume_artifact.warnings,
+                         "this application did not expose a resume file input"],
+            "method": "validated-artifact-only",
+            "uploads": 0,
+            "rechecked_at_final_step": 0,
+        }
+        ctx.resume_verification = result
+        return result
+    visible_rechecks = 0
+    for field_id, upload_check in list(ctx.resume_uploads.items()):
+        metadata = browser_file_metadata(page, field_id)
+        if metadata is None:
+            continue  # a prior multi-step page is gone; the exact upload-time match remains evidence
+        ctx.resume_uploads[field_id] = verify_browser_file(metadata, ctx.resume_artifact)
+        visible_rechecks += 1
+    result = {
+        "status": "verified",
+        "name": ctx.resume_artifact.name,
+        "size": ctx.resume_artifact.size,
+        "sha256": ctx.resume_artifact.sha256,
+        "pages": ctx.resume_artifact.pages,
+        "extracted_chars": ctx.resume_artifact.extracted_chars,
+        "warnings": list(ctx.resume_artifact.warnings),
+        "method": "browser-file-byte-match",
+        "uploads": len(ctx.resume_uploads),
+        "rechecked_at_final_step": visible_rechecks,
+    }
+    ctx.resume_verification = result
+    return result
+
+
 def open_job(page, job, adapter):
     url = adapter.prepare_url(job["url"])
     resp = page.goto(url, wait_until="domcontentloaded", timeout=45000)
@@ -254,6 +304,14 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
         # in the same pass so the employer tab is actually filled; its dashboard
         # review remains available, and the final manual click is approval.
         db.log(job["id"], "tailored resume ready for review; continuing to fill because manual website handoff is enabled")
+    try:
+        artifact = validate_resume_artifact(resume_path, profile)
+    except ResumeValidationError as exc:
+        reason = f"resume validation failed: {str(exc)[:220]}"
+        db.add_need(job["id"], f"resume-validity@{job['id']}",
+                    f"Fix the resume for {job['company']} - {job['title']}: {reason}", "file", [resume_path or ""])
+        return Outcome("NEEDS_USER_INPUT", reason, evidence=shot(page, job, "resume_invalid"),
+                       resume=resume_path or "")
     if answer_chat:
         ans_fn = lambda q, limit=None: write_answer(cfg, q, job["company"], job["title"], page_text, limit, chat=answer_chat)
     elif paid_editor_configured(cfg):
@@ -265,6 +323,12 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
     else:
         ans_fn = lambda q, limit=None: None
     ctx = Ctx(db, cfg, profile, resume_path, ans_fn, job["id"], page_text)
+    ctx.resume_artifact = artifact
+    ctx.resume_verification = {
+        "status": "artifact-valid", "name": artifact.name, "size": artifact.size,
+        "sha256": artifact.sha256, "pages": artifact.pages,
+        "extracted_chars": artifact.extracted_chars, "warnings": list(artifact.warnings),
+    }
     CFG_FOR_CHOICE[0] = cfg
     if answer_chat or llm_configured(cfg):
         ctx.choice_fn = lambda q, opts: pick_grounded(cfg, q, opts, profile, chat=answer_chat)
@@ -310,7 +374,20 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                     continue
                 if f["kind"] == "combobox":
                     f["fallback"] = None
-                if fields.apply(page, f, d):
+                applied = fields.apply(page, f, d)
+                if applied and f["kind"] == "file" and d.source == "resume":
+                    try:
+                        metadata = browser_file_metadata(page, f["id"])
+                        ctx.resume_uploads[f["id"]] = verify_browser_file(metadata, artifact)
+                        ctx.resume_verification = {
+                            **ctx.resume_uploads[f["id"]], "pages": artifact.pages,
+                            "extracted_chars": artifact.extracted_chars,
+                            "warnings": list(artifact.warnings),
+                        }
+                    except ResumeValidationError as exc:
+                        needs.append((f, (f"Resume attachment verification failed: {str(exc)[:180]}", "file")))
+                        continue
+                if applied:
                     filled += 1
                     asked.append({"q": label[:120], "src": d.source})
             except Exception as e:  # one bad field must not kill the application
@@ -325,14 +402,27 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                     base_key = norm_key(q)
                     db.add_need(job["id"], ctx.question_keys.get(base_key, base_key), q, kind, f.get("options"))
             return Outcome("NEEDS_USER_INPUT", f"{len(needs)} unanswered", evidence=shot(page, job, "needs"),
-                           questions=asked, keep_page=keep_for_review)
+                           resume=resume_path or "", questions=asked, keep_page=keep_for_review,
+                           resume_sha256=artifact.sha256, resume_verification=ctx.resume_verification)
 
         sub = adapter.find_submit(page)
         nxt = adapter.find_next(page) if not sub else None
         if sub and not nxt:
+            try:
+                attachment = _verify_resume_at_checkpoint(page, ctx)
+            except ResumeValidationError as exc:
+                reason = f"resume attachment unverified: {str(exc)[:220]}"
+                db.add_need(job["id"], f"resume-attachment@{job['id']}",
+                            f"Verify the resume attachment for {job['company']} - {job['title']}: {reason}",
+                            "file", [resume_path or ""])
+                return Outcome("NEEDS_USER_INPUT", reason, evidence=shot(page, job, "resume_unverified"),
+                               resume=resume_path or "", questions=asked, keep_page=keep_for_review,
+                               resume_sha256=artifact.sha256, resume_verification=ctx.resume_verification)
             problems = pre_submit_check(page, profile, flds)
             if problems:
-                return Outcome("FAILED", "pre-submit check: " + "; ".join(problems)[:300], evidence=shot(page, job, "precheck"), questions=asked)
+                return Outcome("FAILED", "pre-submit check: " + "; ".join(problems)[:300], evidence=shot(page, job, "precheck"),
+                               resume=resume_path or "", questions=asked, resume_sha256=artifact.sha256,
+                               resume_verification=attachment)
             if not live:
                 if keep_for_review:
                     try:
@@ -342,8 +432,10 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                         pass
                     return Outcome("READY_TO_SUBMIT", "dry-run form filled: review the open tab; only you can click Submit",
                                    evidence=shot(page, job, "ready"), resume=resume_path or "", questions=asked,
-                                   keep_page=True)
-                return Outcome("NOT_STARTED", "DRYRUN_OK", evidence=shot(page, job, "dryrun"), resume=resume_path or "", questions=asked)
+                                   keep_page=True, resume_sha256=artifact.sha256,
+                                   resume_verification=attachment)
+                return Outcome("NOT_STARTED", "DRYRUN_OK", evidence=shot(page, job, "dryrun"), resume=resume_path or "",
+                               questions=asked, resume_sha256=artifact.sha256, resume_verification=attachment)
             if cfg.get("handoff", "fallback") == "always":   # the human makes the final click; invisible reCAPTCHA rejects automated ones
                 try:
                     page.bring_to_front()
@@ -351,11 +443,14 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                 except Exception:
                     pass
                 return Outcome("READY_TO_SUBMIT", "form filled: click Submit in the open tab", evidence=shot(page, job, "ready"),
-                               resume=resume_path or "", questions=asked, submitted=True, keep_page=True)
+                               resume=resume_path or "", questions=asked, submitted=True, keep_page=True,
+                               resume_sha256=artifact.sha256, resume_verification=attachment)
             before = page.url
             sub.click()
             settle(page)
             out = confirm_submission(page, job, adapter, before, resume_path or "", asked)
+            out.resume_sha256 = artifact.sha256
+            out.resume_verification = attachment
             if out.status == "BLOCKED" and "anti-bot" in out.reason and cfg.get("handoff", "fallback") != "never":
                 # the agent tried on its own and the site rejected it; the filled form is still on screen, so hand it to the user
                 try:

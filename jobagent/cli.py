@@ -11,7 +11,8 @@ def export_csv(db, path=None):
     path = path or DATA / "applications.csv"
     rows = db.q("""SELECT company,title,location,url,source_url,category,priority,platform,status,status_reason,
         datetime(discovered_at,'unixepoch') discovered, datetime(attempted_at,'unixepoch') attempted,
-        datetime(submitted_at,'unixepoch') submitted, resume_used, retries, last_error, evidence, questions_json FROM jobs ORDER BY priority, company""")
+        datetime(submitted_at,'unixepoch') submitted, resume_used, resume_sha256, resume_verification,
+        retries, last_error, evidence, questions_json FROM jobs ORDER BY priority, company""")
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ["company"])
         w.writeheader(); w.writerows(rows)

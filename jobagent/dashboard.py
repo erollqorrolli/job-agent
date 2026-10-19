@@ -42,6 +42,15 @@ def _with_resume_names(rows):
     for row in rows:
         resume = _stored_resume(row.pop("resume_used", None))
         row["resume_name"] = resume.name if resume else None
+        try:
+            verification = json.loads(row.pop("resume_verification", None) or "{}")
+        except (TypeError, ValueError):
+            verification = {}
+        sha256 = row.pop("resume_sha256", None) or verification.get("sha256") or ""
+        row["resume_verified"] = verification.get("status") == "verified"
+        row["resume_verification_status"] = verification.get("status") or "unverified"
+        row["resume_sha256_short"] = sha256[:12]
+        row["resume_warnings"] = verification.get("warnings") or []
     return rows
 
 
@@ -103,6 +112,7 @@ def state():
         profile_missing=missing_required(p, has_resume=has_resume), profile=profile_form(p),
         resumes=public_inventory(db, p), resume_editor=editor,
         latest=_with_resume_names(db.q("""SELECT id,company,title,status,status_reason,resume_used,
+            resume_sha256,resume_verification,
             datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t
             FROM jobs WHERE attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 15""")),
         needs=needs,
@@ -112,7 +122,8 @@ def state():
 @app.get("/api/jobs")
 def jobs():
     st = request.args.get("status")
-    rows = db.q("SELECT id,company,title,location,platform,priority,status,status_reason,url,resume_used FROM jobs"
+    rows = db.q("""SELECT id,company,title,location,platform,priority,status,status_reason,url,resume_used,
+                        resume_sha256,resume_verification FROM jobs"""
                 + (" WHERE status=?" if st else "") + " ORDER BY priority, company LIMIT 500", (st,) if st else ())
     return jsonify(_with_resume_names(rows))
 

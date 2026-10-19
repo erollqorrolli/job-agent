@@ -232,6 +232,8 @@ def poll_ready(db, ready: dict, log=print):
 
 def apply_outcome(db, cfg, job, out: Outcome):
     f = dict(status=out.status, status_reason=out.reason, evidence=out.evidence, resume_used=out.resume or None,
+             resume_sha256=out.resume_sha256 or None,
+             resume_verification=__import__("json").dumps(out.resume_verification or {}),
              questions_json=__import__("json").dumps(out.questions))
     if out.status == "APPLIED":
         f["submitted_at"] = time.time()

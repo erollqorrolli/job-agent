@@ -1,4 +1,4 @@
-import sys, pathlib
+import hashlib, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import pytest
 from playwright.sync_api import sync_playwright
@@ -46,6 +46,13 @@ def profile(tmp_path, monkeypatch):
             "facts": {"projects": ["Built a small web app for tracking course schedules"], "skills": ["Python"]}}
     for mod in ("jobagent.runner", "jobagent.answers", "jobagent.ingest"):
         monkeypatch.setattr(f"{mod}.load_profile", lambda: prof)
+    from jobagent.resume_validation import ResumeArtifact
+    def valid_test_resume(path, _profile):
+        value = pathlib.Path(path)
+        data = value.read_bytes()
+        return ResumeArtifact(str(value.resolve()), value.name, len(data), hashlib.sha256(data).hexdigest(),
+                              value.suffix.lstrip("."), 1, 500)
+    monkeypatch.setattr("jobagent.runner.validate_resume_artifact", valid_test_resume)
     return prof
 
 

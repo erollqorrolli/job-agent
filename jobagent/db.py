@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS jobs(
   dedupe_key TEXT, source_url TEXT, category TEXT, priority INTEGER, platform TEXT,
   status TEXT DEFAULT 'NOT_STARTED', status_reason TEXT, date_posted INTEGER,
   discovered_at REAL, attempted_at REAL, submitted_at REAL, resume_used TEXT,
+  resume_sha256 TEXT, resume_verification TEXT,
   retries INTEGER DEFAULT 0, evidence TEXT, last_error TEXT, next_try_at REAL DEFAULT 0,
   questions_json TEXT DEFAULT '[]');
 CREATE INDEX IF NOT EXISTS ix_status ON jobs(status, priority);
@@ -31,6 +32,11 @@ def connect(path=None):
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
+    columns = {row[1] for row in c.execute("PRAGMA table_info(jobs)")}
+    for name in ("resume_sha256", "resume_verification"):
+        if name not in columns:
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+    c.commit()
     return c
 
 
@@ -123,7 +129,8 @@ class DB:
                 self.c.execute(f"DELETE FROM answers WHERE qkey IN ({review_marks})", review_keys)
                 self.c.execute(
                     f"""UPDATE jobs SET status='NOT_STARTED', status_reason='reverted by user; ready to process again',
-                        attempted_at=NULL, submitted_at=NULL, resume_used=NULL, retries=0, evidence=NULL,
+                        attempted_at=NULL, submitted_at=NULL, resume_used=NULL, resume_sha256=NULL,
+                        resume_verification=NULL, retries=0, evidence=NULL,
                         last_error=NULL, next_try_at=0, questions_json='[]' WHERE id IN ({allowed_marks})""", allowed)
                 now = time.time()
                 self.c.executemany("INSERT INTO events(ts,job_id,msg) VALUES(?,?,?)",
