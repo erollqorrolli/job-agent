@@ -137,6 +137,28 @@ def test_dashboard_manual_job_decision_rejects_invalid_or_claimed_job(db, monkey
     assert db.q("SELECT status FROM jobs WHERE id='active'")[0]["status"] == "IN_PROGRESS"
 
 
+def test_dashboard_manual_decision_clears_awaiting_input_for_one_job(db, monkeypatch):
+    from jobagent import dashboard
+
+    monkeypatch.setattr(dashboard, "db", db)
+    db.x("INSERT INTO jobs(id,company,title,status,questions_json) VALUES(?,?,?,?,?)",
+         ("waiting", "Acme", "SWE Intern", "NEEDS_USER_INPUT", '[{"q":"Why?"}]'))
+    db.add_need("waiting", "why", "Why Acme?", "draft", ["Draft"])
+    client = dashboard.app.test_client()
+
+    before = client.get("/api/state").get_json()["needs"]
+    assert before[0]["jobs"] == [{"id": "waiting", "company": "Acme",
+                                  "title": "SWE Intern", "status": "NEEDS_USER_INPUT"}]
+    response = client.post("/api/jobs/waiting/decision", json={"decision": "skip"})
+
+    assert response.status_code == 200 and response.get_json()["questions_cleared"] == 1
+    job = db.q("SELECT status,status_reason,questions_json FROM jobs WHERE id='waiting'")[0]
+    assert job == {"status": "SKIPPED", "status_reason": "marked manually: not applying to this internship",
+                   "questions_json": "[]"}
+    assert not db.q("SELECT 1 FROM human_queue WHERE job_id='waiting' AND resolved_at IS NULL")
+    assert client.get("/api/state").get_json()["needs"] == []
+
+
 def test_dashboard_saves_submission_handoff_mode(db, monkeypatch):
     from jobagent import dashboard
 

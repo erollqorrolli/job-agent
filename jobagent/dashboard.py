@@ -71,6 +71,14 @@ def state():
         editor["tailoring_blocker"] = "Connect and select a premium model to enable resume tailoring."
     else:
         editor["tailoring_blocker"] = ""
+    needs = db.q("""SELECT qkey,question,kind,options,COUNT(*) n FROM human_queue
+                    WHERE resolved_at IS NULL GROUP BY qkey ORDER BY n DESC LIMIT 50""")
+    for need in needs:
+        need["jobs"] = db.q("""SELECT DISTINCT j.id,j.company,j.title,j.status
+                               FROM human_queue h JOIN jobs j ON j.id=h.job_id
+                               WHERE h.qkey=? AND h.resolved_at IS NULL
+                                 AND j.status IN ('NOT_STARTED','NEEDS_USER_INPUT')
+                               ORDER BY j.company,j.title""", (need["qkey"],))
     return jsonify(
         counts=c, total=total, eligible=elig, remaining=c["NOT_STARTED"] + c["IN_PROGRESS"], per_hour=hour,
         dryrun_ok=db.q("SELECT COUNT(*) n FROM jobs WHERE last_error='DRYRUN_OK'")[0]["n"],
@@ -80,7 +88,7 @@ def state():
         profile_missing=missing_required(p, has_resume=has_resume), profile=profile_form(p),
         resumes=public_inventory(db, p), resume_editor=editor,
         latest=db.q("SELECT company,title,status,status_reason,datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t FROM jobs WHERE attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 15"),
-        needs=db.q("SELECT qkey,question,kind,options,COUNT(*) n FROM human_queue WHERE resolved_at IS NULL GROUP BY qkey ORDER BY n DESC LIMIT 50"),
+        needs=needs,
         events=db.q("SELECT datetime(ts,'unixepoch','localtime') t, msg FROM events ORDER BY id DESC LIMIT 8"))
 
 
@@ -114,12 +122,14 @@ def job_decision(job_id):
     if not db.q("SELECT 1 FROM jobs WHERE id=?", (job_id,)):
         return jsonify(error="job not found"), 404
     status, reason = MANUAL_JOB_DECISIONS[decision]
-    changed = db.x("""UPDATE jobs SET status=?, status_reason=?, next_try_at=0
-                      WHERE id=? AND status='NOT_STARTED'""", (status, reason, job_id))
+    changed = db.x("""UPDATE jobs SET status=?, status_reason=?, next_try_at=0, questions_json='[]'
+                      WHERE id=? AND status IN ('NOT_STARTED','NEEDS_USER_INPUT')""",
+                   (status, reason, job_id))
     if changed.rowcount != 1:
-        return jsonify(error="only queued Not Started jobs can be marked manually"), 409
+        return jsonify(error="only queued or awaiting-input jobs can be marked manually"), 409
+    cleared = db.x("DELETE FROM human_queue WHERE job_id=? AND resolved_at IS NULL", (job_id,)).rowcount
     db.log(job_id, reason)
-    return jsonify(ok=True, status=status, status_reason=reason)
+    return jsonify(ok=True, status=status, status_reason=reason, questions_cleared=cleared)
 
 
 @app.post("/api/jobs/revert-pending")
