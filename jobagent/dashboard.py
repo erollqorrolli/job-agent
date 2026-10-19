@@ -24,6 +24,10 @@ db = DB()
 SETTINGS = ["max_per_session", "max_ready_tabs", "priorities", "countries", "excluded_keywords",
             "live_submit", "handoff", "poll_minutes", "headless", "max_retries"]
 HANDOFF_MODES = {"always", "fallback", "never"}
+MANUAL_JOB_DECISIONS = {
+    "already_applied": ("ALREADY_APPLIED", "marked manually: already applied"),
+    "skip": ("SKIPPED", "marked manually: not applying to this internship"),
+}
 
 
 def proc_alive():
@@ -47,7 +51,7 @@ def state():
     c = db.counts()
     total = sum(c.values())
     hour = db.q("SELECT COUNT(*) n FROM jobs WHERE status='APPLIED' AND submitted_at>?", (time.time() - 3600,))[0]["n"]
-    elig = total - c["INELIGIBLE"] - c["CLOSED"]
+    elig = total - c["INELIGIBLE"] - c["CLOSED"] - c["SKIPPED"]
     cfg = effective_cfg(db)
     p = load_profile()
     resumes = resume_inventory(db, p)
@@ -100,6 +104,22 @@ def job_revert(job_id):
     if not db.q("SELECT 1 FROM jobs WHERE id=?", (job_id,)):
         return jsonify(error="job not found"), 404
     return _revert_jobs([job_id])
+
+
+@app.post("/api/jobs/<job_id>/decision")
+def job_decision(job_id):
+    decision = str((request.json or {}).get("decision") or "")
+    if decision not in MANUAL_JOB_DECISIONS:
+        return jsonify(error="invalid manual job decision"), 400
+    if not db.q("SELECT 1 FROM jobs WHERE id=?", (job_id,)):
+        return jsonify(error="job not found"), 404
+    status, reason = MANUAL_JOB_DECISIONS[decision]
+    changed = db.x("""UPDATE jobs SET status=?, status_reason=?, next_try_at=0
+                      WHERE id=? AND status='NOT_STARTED'""", (status, reason, job_id))
+    if changed.rowcount != 1:
+        return jsonify(error="only queued Not Started jobs can be marked manually"), 409
+    db.log(job_id, reason)
+    return jsonify(ok=True, status=status, status_reason=reason)
 
 
 @app.post("/api/jobs/revert-pending")

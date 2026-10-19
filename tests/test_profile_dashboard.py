@@ -99,6 +99,44 @@ def test_dashboard_revert_waits_for_worker_to_stop(db, monkeypatch):
     assert db.q("SELECT status FROM jobs WHERE id='active'")[0]["status"] == "IN_PROGRESS"
 
 
+def test_dashboard_marks_queued_jobs_as_already_applied_or_skipped(db, monkeypatch):
+    from jobagent import dashboard
+
+    monkeypatch.setattr(dashboard, "db", db)
+    db.x("INSERT INTO jobs(id,company,title,status) VALUES(?,?,?,?)",
+         ("already", "Acme", "SWE Intern", "NOT_STARTED"))
+    db.x("INSERT INTO jobs(id,company,title,status) VALUES(?,?,?,?)",
+         ("skip", "Other", "SWE Intern", "NOT_STARTED"))
+    client = dashboard.app.test_client()
+
+    already = client.post("/api/jobs/already/decision", json={"decision": "already_applied"})
+    skipped = client.post("/api/jobs/skip/decision", json={"decision": "skip"})
+
+    assert already.status_code == skipped.status_code == 200
+    rows = {row["id"]: row for row in db.q("SELECT id,status,status_reason FROM jobs")}
+    assert rows["already"] == {"id": "already", "status": "ALREADY_APPLIED",
+                               "status_reason": "marked manually: already applied"}
+    assert rows["skip"] == {"id": "skip", "status": "SKIPPED",
+                            "status_reason": "marked manually: not applying to this internship"}
+    state = client.get("/api/state").get_json()
+    assert state["counts"]["SKIPPED"] == 1
+    assert state["eligible"] == 1
+
+
+def test_dashboard_manual_job_decision_rejects_invalid_or_claimed_job(db, monkeypatch):
+    from jobagent import dashboard
+
+    monkeypatch.setattr(dashboard, "db", db)
+    db.x("INSERT INTO jobs(id,company,title,status) VALUES(?,?,?,?)",
+         ("active", "Acme", "SWE Intern", "IN_PROGRESS"))
+    client = dashboard.app.test_client()
+
+    assert client.post("/api/jobs/active/decision", json={"decision": "skip"}).status_code == 409
+    assert client.post("/api/jobs/active/decision", json={"decision": "other"}).status_code == 400
+    assert client.post("/api/jobs/missing/decision", json={"decision": "skip"}).status_code == 404
+    assert db.q("SELECT status FROM jobs WHERE id='active'")[0]["status"] == "IN_PROGRESS"
+
+
 def test_dashboard_saves_submission_handoff_mode(db, monkeypatch):
     from jobagent import dashboard
 

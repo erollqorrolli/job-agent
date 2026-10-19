@@ -38,6 +38,13 @@ def next_job(db, cfg, skip, platform=None):
     return rows[0] if rows else None
 
 
+def claim_job(db, job_id: str) -> bool:
+    """Atomically claim a queued job unless a user decision got there first."""
+    cur = db.x("""UPDATE jobs SET status='IN_PROGRESS', attempted_at=?
+                  WHERE id=? AND status='NOT_STARTED'""", (time.time(), job_id))
+    return cur.rowcount == 1
+
+
 def launch(pw, cfg):
     args = []
     ext = cfg.get("extension_path")
@@ -106,7 +113,7 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                 db.kv_set("current", f"{len(ready)} forms waiting for review in the browser tabs")
                 time.sleep(5); continue
             # jobs the user just answered are eligible again within this session
-            tried &= {r["id"] for r in db.q("SELECT id FROM jobs WHERE status IN ('APPLIED','UNCERTAIN','ALREADY_APPLIED','INELIGIBLE','CLOSED','FAILED','BLOCKED','READY_TO_SUBMIT')")}
+            tried &= {r["id"] for r in db.q("SELECT id FROM jobs WHERE status IN ('APPLIED','UNCERTAIN','ALREADY_APPLIED','INELIGIBLE','SKIPPED','CLOSED','FAILED','BLOCKED','READY_TO_SUBMIT')")}
             job = next_job(db, cfg, tried, platform)
             if not job:
                 if once_limit:
@@ -124,7 +131,9 @@ def run(db=None, once_limit=None, answer_chat=None, log=print, override=None, pl
                 time.sleep(wait)
             if ctx is None:
                 ctx = launch(pw, cfg)
-            db.update(job["id"], status="IN_PROGRESS", attempted_at=time.time())
+            if not claim_job(db, job["id"]):  # manually removed from the queue while this worker was waiting
+                tried.add(job["id"])
+                continue
             db.kv_set("current", f"{job['company']} - {job['title']}")
             page = None
             try:
