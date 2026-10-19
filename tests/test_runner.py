@@ -161,7 +161,7 @@ def test_review_queue_is_capped(page, db, site, profile, tmp_path, monkeypatch):
     assert db.q("SELECT COUNT(*) n FROM human_queue WHERE kind='resume'")[0]["n"] == 2
 
 
-def test_manual_review_fills_form_while_resume_review_remains_available(page, db, site, profile, tmp_path, monkeypatch):
+def test_manual_review_attaches_tailored_resume_without_a_separate_approval(page, db, site, profile, tmp_path, monkeypatch):
     from pathlib import Path
     from jobagent import runner
 
@@ -178,26 +178,35 @@ def test_manual_review_fills_form_while_resume_review_remains_available(page, db
 
     monkeypatch.setattr(runner, "paid_editor_configured", lambda cfg: True)
     monkeypatch.setattr(runner, "tailor_with_paid_editor", fake_editor)
+    for i in range(5):
+        db.add_need(f"existing-{i}", f"resume@existing-{i}", "Existing resume review", "resume", ["resume.pdf"])
     job = make_job(db, f"{site}/simple.html", jid="manual-resume")
     out = process(page, db, {"live_submit": False, "tailor_min_chars": 10,
                              "handoff": "always", "headless": False}, job, answer_chat=GOOD)
 
     assert out.status == "READY_TO_SUBMIT" and out.keep_page
     assert page.input_value("#em") == "test@example.com"
-    assert db.q("SELECT 1 FROM human_queue WHERE job_id=? AND kind='resume' AND resolved_at IS NULL",
-                (job["id"],))
+    assert out.resume.endswith(".pdf")
+    assert not db.q("SELECT 1 FROM human_queue WHERE job_id=? AND kind='resume' AND resolved_at IS NULL",
+                    (job["id"],))
 
 
 def test_manual_mode_requeues_existing_resume_only_waits(db):
     from jobagent.worker import requeue_manual_resume_reviews
 
     job = make_job(db, "https://example.test/job", jid="resume-wait")
+    deferred = make_job(db, "https://example.test/deferred", jid="resume-deferred")
     db.update(job["id"], status="NEEDS_USER_INPUT", status_reason="tailored resume awaiting your review")
+    db.update(deferred["id"], status="NOT_STARTED", status_reason="waiting for resume reviews", next_try_at=99)
     db.add_need(job["id"], "resume@resume-wait", "Review tailored resume", "resume", ["resume.pdf"])
 
-    assert requeue_manual_resume_reviews(db, {"handoff": "always", "headless": False}) == 1
+    assert requeue_manual_resume_reviews(db, {"handoff": "always", "headless": False}) == 2
     row = db.q("SELECT status,status_reason FROM jobs WHERE id=?", (job["id"],))[0]
     assert row["status"] == "NOT_STARTED"
+    assert "manual final review" in row["status_reason"]
+    assert not db.q("SELECT 1 FROM human_queue WHERE job_id=? AND resolved_at IS NULL", (job["id"],))
+    row = db.q("SELECT status,status_reason,next_try_at FROM jobs WHERE id=?", (deferred["id"],))[0]
+    assert row["status"] == "NOT_STARTED" and row["next_try_at"] == 0
     assert "manual final review" in row["status_reason"]
 
 

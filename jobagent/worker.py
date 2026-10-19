@@ -71,16 +71,26 @@ def launch(pw, cfg):
 
 
 def requeue_manual_resume_reviews(db, cfg):
-    """Resume-only review gates are non-blocking when the final submit is manual."""
+    """Remove separate resume approval gates when the final application review is manual."""
     if cfg.get("handoff", "fallback") != "always" or cfg.get("headless", False):
         return 0
-    cur = db.x("""UPDATE jobs SET status='NOT_STARTED',
-                  status_reason='tailored resume ready; queued for manual final review', next_try_at=0
-                  WHERE status='NEEDS_USER_INPUT'
-                    AND EXISTS (SELECT 1 FROM human_queue h WHERE h.job_id=jobs.id
-                                AND h.resolved_at IS NULL AND h.kind='resume')
-                    AND NOT EXISTS (SELECT 1 FROM human_queue h WHERE h.job_id=jobs.id
-                                    AND h.resolved_at IS NULL AND h.kind!='resume')""")
+    review_ids = {r["job_id"] for r in db.q(
+        "SELECT DISTINCT job_id FROM human_queue WHERE resolved_at IS NULL AND kind='resume'")}
+    deferred_ids = {r["id"] for r in db.q(
+        "SELECT id FROM jobs WHERE status='NOT_STARTED' AND status_reason='waiting for resume reviews'")}
+    job_ids = sorted(review_ids | deferred_ids)
+    if not job_ids:
+        return 0
+    db.x("""UPDATE human_queue SET answer='attached automatically for manual final review', resolved_at=?
+            WHERE resolved_at IS NULL AND kind='resume'""", (time.time(),))
+    marks = ",".join("?" for _ in job_ids)
+    cur = db.x(f"""UPDATE jobs SET status='NOT_STARTED',
+                  status_reason='tailored resume will be shown at manual final review', next_try_at=0
+                  WHERE id IN ({marks}) AND
+                    (status='NOT_STARTED' OR
+                     (status='NEEDS_USER_INPUT' AND NOT EXISTS
+                       (SELECT 1 FROM human_queue h WHERE h.job_id=jobs.id AND h.resolved_at IS NULL)))""",
+               job_ids)
     return cur.rowcount
 
 

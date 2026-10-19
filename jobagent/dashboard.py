@@ -30,6 +30,21 @@ MANUAL_JOB_DECISIONS = {
 }
 
 
+def _stored_resume(path):
+    if not path:
+        return None
+    candidate = Path(path).resolve()
+    root = (ROOT / "data" / "resumes").resolve()
+    return candidate if candidate.is_relative_to(root) and candidate.is_file() else None
+
+
+def _with_resume_names(rows):
+    for row in rows:
+        resume = _stored_resume(row.pop("resume_used", None))
+        row["resume_name"] = resume.name if resume else None
+    return rows
+
+
 def proc_alive():
     pid = db.kv_get("worker_pid")
     if not pid:
@@ -87,7 +102,9 @@ def state():
         profile_ok=verified(p, has_resume=has_resume),
         profile_missing=missing_required(p, has_resume=has_resume), profile=profile_form(p),
         resumes=public_inventory(db, p), resume_editor=editor,
-        latest=db.q("SELECT company,title,status,status_reason,datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t FROM jobs WHERE attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 15"),
+        latest=_with_resume_names(db.q("""SELECT id,company,title,status,status_reason,resume_used,
+            datetime(COALESCE(submitted_at,attempted_at),'unixepoch','localtime') t
+            FROM jobs WHERE attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 15""")),
         needs=needs,
         events=db.q("SELECT datetime(ts,'unixepoch','localtime') t, msg FROM events ORDER BY id DESC LIMIT 8"))
 
@@ -95,9 +112,19 @@ def state():
 @app.get("/api/jobs")
 def jobs():
     st = request.args.get("status")
-    rows = db.q("SELECT id,company,title,location,platform,priority,status,status_reason,url FROM jobs"
+    rows = db.q("SELECT id,company,title,location,platform,priority,status,status_reason,url,resume_used FROM jobs"
                 + (" WHERE status=?" if st else "") + " ORDER BY priority, company LIMIT 500", (st,) if st else ())
-    return jsonify(rows)
+    return jsonify(_with_resume_names(rows))
+
+
+@app.get("/api/jobs/<job_id>/resume")
+def job_resume(job_id):
+    from flask import send_file, abort
+    rows = db.q("SELECT resume_used FROM jobs WHERE id=?", (job_id,))
+    resume = _stored_resume(rows[0]["resume_used"] if rows else None)
+    if not resume:
+        abort(404)
+    return send_file(resume, as_attachment=True, download_name=resume.name)
 
 
 def _revert_jobs(job_ids):

@@ -87,7 +87,7 @@ def resume_decision_event(job, info):
             f"ATS keywords={keywords}; model={info.get('provider', 'model')}/{info.get('model', 'unknown')}{tokens}")
 
 
-def maybe_tailor(db, cfg, profile, job, job_text, default_path):
+def maybe_tailor(db, cfg, profile, job, job_text, default_path, require_review=True):
     """Tailor only a primary LaTeX source, preserving its structure locally."""
     sources = resume_inventory(db, profile)
     if not cfg.get("tailor_resume", True) or len(job_text) < cfg.get("tailor_min_chars", 200):
@@ -132,6 +132,8 @@ def maybe_tailor(db, cfg, profile, job, job_text, default_path):
             return default_path, None
     if int(info.get("edits") or 0) == 0:
         return default_path, None
+    if not require_review:
+        return str(out), None
     key = f"resume@{job['id']}"
     if db.get_answer(key) is None:
         limit = max(1, int(cfg.get("tailor_review_queue_limit", cfg.get("tailor_review_first", 5))))
@@ -240,7 +242,9 @@ def process(page, db, cfg, job, answer_chat=None) -> Outcome:
                        keep_page=keep_for_review)
     page_text = detect.body_text(page)
     resume_path = default_resume
-    resume_path, review = maybe_tailor(db, cfg, profile, job, page_text, resume_path)
+    resume_path, review = maybe_tailor(
+        db, cfg, profile, job, page_text, resume_path,
+        require_review=not keep_for_review)
     if review:
         review.evidence = shot(page, job, "review")
         if not keep_for_review or review.reason == "DEFER_REVIEW":

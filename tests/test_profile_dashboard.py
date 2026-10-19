@@ -184,7 +184,7 @@ def test_dashboard_saves_and_validates_review_tab_limit(db, monkeypatch):
     monkeypatch.setattr(dashboard, "db", db)
     client = dashboard.app.test_client()
 
-    assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 20
+    assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 60
     saved = client.post("/api/settings", json={"max_ready_tabs": 32})
     assert saved.status_code == 200
     assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 32
@@ -194,6 +194,28 @@ def test_dashboard_saves_and_validates_review_tab_limit(db, monkeypatch):
         assert rejected.status_code == 400
         assert "whole number from 1 to 100" in rejected.get_json()["error"]
     assert client.get("/api/state").get_json()["settings"]["max_ready_tabs"] == 32
+
+
+def test_dashboard_shows_and_serves_the_resume_attached_to_an_application(db, tmp_path, monkeypatch):
+    from jobagent import dashboard
+
+    monkeypatch.setattr(dashboard, "db", db)
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+    resume = tmp_path / "data" / "resumes" / "job" / "tailored.pdf"
+    resume.parent.mkdir(parents=True)
+    resume.write_bytes(b"%PDF-tailored")
+    db.x("""INSERT INTO jobs(id,company,title,status,attempted_at,resume_used)
+            VALUES(?,?,?,?,?,?)""",
+         ("with-resume", "Acme", "SWE Intern", "READY_TO_SUBMIT", 10, str(resume)))
+    client = dashboard.app.test_client()
+
+    latest = client.get("/api/state").get_json()["latest"]
+    jobs = client.get("/api/jobs?status=READY_TO_SUBMIT").get_json()
+
+    assert latest[0]["resume_name"] == "tailored.pdf"
+    assert jobs[0]["resume_name"] == "tailored.pdf"
+    downloaded = client.get("/api/jobs/with-resume/resume")
+    assert downloaded.status_code == 200 and downloaded.data == b"%PDF-tailored"
 
 
 def test_answer_resolves_semantically_equivalent_existing_queue_items(db, monkeypatch):
